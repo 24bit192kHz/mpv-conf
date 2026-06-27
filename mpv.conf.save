@@ -1,0 +1,96 @@
+### Profile ###
+#include="~/.config/mpv/profiles.conf"  # Includes additional profiles from a separate file in ~/.config/mpv/; allows managing multiple configs; unchanged from original
+
+
+### Video ###
+vo=gpu-next                            # Video output driver; modern GPU-accelerated renderer, supports advanced tone mapping and scaling; better than older 'gpu'
+gpu-api=auto                           # Graphics API (e.g., OpenGL, Vulkan); 'auto' selects best option for your system, ensuring compatibility and performance
+hwdec=auto                             # Hardware decoding; 'auto' picks best method (e.g., NVDEC, VAAPI) vs original 'vdpau', improving flexibility and efficiency
+gpu-context=wayland                    # Display context; kept from original, matches Wayland environment for proper desktop integration
+
+tone-mapping=bt.2390                   # HDR-to-SDR tone mapping algo; 'bt.2390' is perceptual, preserves detail vs original 'clip' that discards data
+target-prim=bt.709                     # Output colorspace; BT.709 is SDR standard, ensures accurate color mapping for typical displays
+target-peak=100                        # SDR peak brightness; set to 350 nits per request, caps output while remapping HDR content
+hdr-compute-peak=no                    # Disables auto HDR peak detection; fixed 350-nit target makes this unnecessary, saves computation
+gamut-mapping-mode=desaturate          # Handles out-of-gamut HDR colors; 'desaturate' preserves detail vs original 'clip', reducing saturation gracefully
+
+scale-antiring=0.6                     # Reduces ringing artifacts during upscaling; kept from original, balances sharpness and smoothness
+dscale-antiring=0.6                    # Same as above, for downscaling; consistent value ensures uniform quality
+cscale-antiring=0.6                    # Anti-ringing for chroma scaling; matches others for visual consistency
+
+#display-fps-override=60                # Forces display refresh rate to 60 Hz; kept from original, ensures smooth playback if supported
+video-sync=display-resample            # Syncs video to display via audio resampling; prevents judder, unchanged from original
+
+deband=no                              # Disables debanding by default; kept from original, avoids processing unless banding is an issue
+deband-iterations=1                    # Limits debanding passes to 1 if enabled; keeps performance light, unchanged
+deband-threshold=48                    # Banding detection sensitivity; original value is moderate, suitable for subtle correction
+deband-range=16                        # Pixel range for debanding; original value balances effectiveness and detail preservation
+deband-grain=32                        # Adds grain to mask banding; original value smooths gradients without over-softening
+
+temporal-dither=yes                    # Enables temporal dithering; reduces banding in SDR gradients, improves quality post-HDR mapping
+
+
+### Audio and Subtitles ###
+slang=ar,ara,Arabic,en,eng             # Preferred subtitle languages; prioritizes Arabic and English, unchanged from original
+alang=ja,jp,jpn,jap,Japanese,en,eng,English  # Preferred audio languages; prioritizes Japanese and English, reflects your content preferences
+
+sub-blur=0.35                          # Slight blur on subtitle edges; kept from original, enhances smoothness
+sub-bold=yes                           # Makes subtitles bold; unchanged, improves readability
+sub-scale=0.85                         # Scales subtitles to 85% size; kept, keeps them unobtrusive
+sub-margin-y=25                        # Vertical margin for subtitles; 25 pixels from original, positions them nicely
+sub-font='Calibri'                     # Subtitle font; Calibri is clean/modern, unchanged
+sub-font-size=30                       # Subtitle size; 30 pixels from original, balances visibility and space
+sub-codepage=cp1256                    # Encoding for Arabic script (Windows-1256); kept, supports your 'slang' preference
+sub-shadow-offset=0.4                  # Shadow offset; subtle contrast boost, unchanged
+sub-border-size=0.85                   # Border thickness around subtitles; thin and effective, kept from original
+
+sub-auto=all                           # Loads all subtitle tracks; unchanged, maximizes availability
+volume-max=100                         # Caps volume at 100%; no amplification, kept from original
+sub-fix-timing=yes                     # Corrects subtitle timing; unchanged, improves sync
+audio-channels=2                    # Adapts audio output to system; flexible and unchanged
+blend-subtitles=yes                    # Blends subtitles into video; seamless look, kept
+sub-ass-override=force                   # Overrides ASS subtitle styling; ensures consistency, unchanged
+audio-file-auto=fuzzy                  # Loads external audio with fuzzy matching; kept, useful for flexibility
+demuxer-mkv-subtitle-preroll=yes       # Preloads MKV subtitles; improves sync, unchanged
+sub-file-paths=sub;subs;subtitles      # Searches these dirs for external subtitles; kept, standard paths
+ao=pulse                               # Audio output; PulseAudio for Linux, unchanged
+
+
+### General ###
+fs=yes                                 # Starts in fullscreen; kept from original, matches typical use
+snap-window                            # Snaps window to screen edges; Wayland-specific, unchanged
+keep-open=always                       # Keeps window open after playback; unchanged, convenient
+geometry=50%:50%                       # Centers window; kept, good default position
+save-position-on-quit=yes              # Saves playback position; unchanged, great for resuming
+watch-later-options-remove=pause       # Excludes pause state from save; kept, avoids unwanted pauses on resume
+
+ignore-path-in-watch-later-config=yes
+watch-later-directory=/mnt/4tb/mp4-cache/watch_later
+
+### OSD/OSC ###
+osc=no                                 # Disables on-screen controller; kept, minimal interface
+border=no                              # Removes window borders; unchanged, clean look
+osd-bar=no                             # Hides OSD progress bar; kept, reduces clutter
+osd-bold=yes                           # Bold OSD text; unchanged, improves visibility
+osd-font-size=37                       # OSD text size; 37 pixels from original, readable
+osd-font=calibri                       # OSD font; Calibri matches subtitles, kept
+
+
+### Screenshots ###
+screenshot-template="/home/btw/Pictures/mpv/%F [%wH.%wM.%wS.%wT]"  # Screenshot save path with timestamp; unchanged, organized naming
+screenshot-format=png                  # PNG format; lossless quality, kept
+screenshot-tag-colorspace=yes          # Tags screenshots with colorspace; unchanged, useful for accuracy
+screenshot-png-compression=5           # Moderate PNG compression; kept, balances size and quality
+
+
+### Terminal and Misc ###
+msg-color=yes                          # Colored terminal messages; unchanged, easier to read
+msg-module=yes                         # Module-specific messages; kept, helps debugging
+msg-level=auto_profiles=no             # Disables auto_profiles messages; kept, reduces verbosity
+keep-open=yes                          # Duplicate of earlier setting; kept for consistency
+msg-level=ytdl_hook=no,ffmpeg=no       # Suppresses ytdl and ffmpeg messages; unchanged, less clutter
+#cache-dir=/mnt/4tb/mpv-cache
+# Use a custom cache directory
+#cache=yes                              # Enables caching; kept, improves streaming
+#demuxer-max-bytes=1073741824           # 1GB cache size; unchanged, generous for buffering
+#demuxer-max-back-bytes=1073741824      # 1GB back buffer; kept, supports seeking
