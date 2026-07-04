@@ -16,9 +16,8 @@ local opts = {
     scan_ahead_seconds = 2.0,
     scan_seconds = 3,
     read_ahead_seconds = 3,
-    apply_before_seconds = 0.02,
-    restore_before_seconds = 0.02,
-    initial_apply_window = 3.0,
+    apply_before_seconds = 0.0,
+    restore_before_seconds = 0.0,
     symmetry_tolerance = 96,
     max_letterbox_aspect = 2.60,
     restore_grace_seconds = 1.0,
@@ -222,6 +221,13 @@ local function json_string(value)
     return string.format("%q", value)
 end
 
+local function current_crop_state()
+    if last_crop then return last_crop end
+    local sw, sh = source_dimensions(nil)
+    if not sw or not sh then return nil end
+    return string.format("%d:%d:0:0", sw, sh)
+end
+
 local function apply_crop(crop, timing)
     crop = normalize_crop(crop)
     if crop == last_crop then return end
@@ -294,15 +300,18 @@ local function build_args(path, start)
 end
 
 local function build_request(path, start)
+    local current_crop = current_crop_state()
+    local current_crop_json = current_crop and json_string(current_crop) or "null"
     return string.format(
-        '{"source":%s,"start":%.3f,"duration":%s,"threshold":%s,"round_to":%s,"sample_step":%s,"min_votes":%s,"timeline":true}\n',
+        '{"source":%s,"start":%.3f,"duration":%s,"threshold":%s,"round_to":%s,"sample_step":%s,"min_votes":%s,"current_crop":%s,"timeline":true}\n',
         json_string(path),
         start,
         tostring(opts.read_ahead_seconds),
         tostring(opts.detect_limit),
         tostring(opts.detect_round),
         tostring(opts.sample_step),
-        tostring(opts.min_votes)
+        tostring(opts.min_votes),
+        current_crop_json
     )
 end
 
@@ -359,9 +368,6 @@ local function queue_crop(crop, scan_start, parsed)
     end
 
     local apply_at = scan_start + math.max(0, relative_seconds - apply_before)
-    if not last_crop and not is_full_frame_crop(crop) and relative_seconds <= opts.initial_apply_window then
-        apply_at = mp.get_property_number("time-pos", scan_start)
-    end
     if pending_crop == crop and pending_at then
         if apply_at >= pending_at - 0.05 then return end
     end
