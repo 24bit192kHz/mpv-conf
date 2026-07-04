@@ -17,6 +17,7 @@ local opts = {
     initial_apply_window = 2.0,
     symmetry_tolerance = 96,
     max_letterbox_aspect = 2.60,
+    restore_grace_seconds = 8.0,
     scan_interval = 2,
     detect_limit = 26,
     detect_round = 2,
@@ -46,6 +47,7 @@ local pending_crop = nil
 local pending_at = nil
 local source_width = nil
 local source_height = nil
+local full_frame_restore_started_at = nil
 local source_dimensions
 local remove_crop
 
@@ -68,6 +70,7 @@ local function stop_cuda_timers()
     end
     pending_crop = nil
     pending_at = nil
+    full_frame_restore_started_at = nil
 end
 
 local function start_legacy_backend(reason)
@@ -123,6 +126,7 @@ remove_crop = function()
     end
     pending_crop = nil
     pending_at = nil
+    full_frame_restore_started_at = nil
     if last_crop then
         mp.set_property("video-crop", "")
         mp.set_property("video-aspect-override", "-2")
@@ -138,6 +142,7 @@ local function reset_crop_state()
     pending_crop = nil
     pending_at = nil
     last_crop = nil
+    full_frame_restore_started_at = nil
     mp.set_property("video-crop", "")
     mp.set_property("video-aspect-override", "-2")
 end
@@ -215,6 +220,22 @@ local function apply_crop(crop, timing)
             mp.set_property("video-aspect-override", "-2")
             last_crop = nil
             log("removed crop=" .. crop)
+            if timing then
+                local applied_at = mp.get_property_number("time-pos", timing.apply_at)
+                telemetry(string.format(
+                    "crop_restore crop=%s needed_at=%.3f detected_at=%.3f scheduled_at=%.3f applied_at=%.3f detect_lag=%.3fs apply_lag=%.3fs schedule_delay=%.3fs remux=%.3fs analyze=%.3fs",
+                    crop,
+                    timing.needed_at,
+                    timing.detected_at,
+                    timing.apply_at,
+                    applied_at,
+                    timing.detected_at - timing.needed_at,
+                    applied_at - timing.needed_at,
+                    timing.apply_at - timing.detected_at,
+                    timing.remux_seconds or -1,
+                    timing.analyze_seconds or -1
+                ))
+            end
         end
         return
     end
@@ -299,6 +320,27 @@ local function queue_crop(crop, scan_start, parsed)
         log("rejected unsafe crop=" .. crop)
         return
     end
+    local needed_at = scan_start + relative_seconds
+    if is_full_frame_crop(crop) and last_crop then
+        if not full_frame_restore_started_at then
+            full_frame_restore_started_at = needed_at
+        end
+        local restore_age = needed_at - full_frame_restore_started_at
+        if restore_age < opts.restore_grace_seconds then
+            local now = mp.get_property_number("time-pos", scan_start)
+            telemetry(string.format(
+                "crop_restore_deferred crop=%s needed_at=%.3f detected_at=%.3f restore_age=%.3fs restore_grace=%.3fs",
+                crop,
+                needed_at,
+                now,
+                restore_age,
+                opts.restore_grace_seconds
+            ))
+            return
+        end
+    else
+        full_frame_restore_started_at = nil
+    end
 
     local apply_before = opts.apply_before_seconds
     if is_full_frame_crop(crop) and last_crop then
@@ -324,7 +366,7 @@ local function queue_crop(crop, scan_start, parsed)
     local now = mp.get_property_number("time-pos", scan_start)
     local delay = math.max(0, apply_at - now)
     local timing = {
-        needed_at = scan_start + relative_seconds,
+        needed_at = needed_at,
         detected_at = now,
         apply_at = apply_at,
         remux_seconds = tonumber(parsed.remux_seconds),

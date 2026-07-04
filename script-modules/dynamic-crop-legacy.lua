@@ -69,6 +69,7 @@ local options = {
     initial_apply_window = 2.0,
     symmetry_tolerance = 96,
     max_letterbox_aspect = 2.60,
+    restore_grace_seconds = 8.0,
     scan_interval = 2,
     min_votes = 3,
     sample_step = 6,
