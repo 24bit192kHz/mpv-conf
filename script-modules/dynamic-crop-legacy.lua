@@ -72,6 +72,7 @@ local options = {
     scan_interval = 2,
     min_votes = 3,
     sample_step = 6,
+    telemetry = true,
     -- behavior
     mode = 4, -- [0-4] more details above
     start_delay = 0, -- delay in seconds used to skip intro (usefull with mode 2)

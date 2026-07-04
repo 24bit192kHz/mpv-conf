@@ -28,6 +28,7 @@ local opts = {
     read_ahead_sync = 1,
     limit_timer = 1.0,
     crop_method = 1,
+    telemetry = true,
     debug = false,
 }
 
@@ -50,6 +51,10 @@ local remove_crop
 
 local function log(message)
     if opts.debug then mp.msg.info(message) end
+end
+
+local function telemetry(message)
+    if opts.telemetry then mp.msg.info(message) end
 end
 
 local function stop_cuda_timers()
@@ -200,7 +205,7 @@ local function json_string(value)
     return string.format("%q", value)
 end
 
-local function apply_crop(crop)
+local function apply_crop(crop, timing)
     crop = normalize_crop(crop)
     if crop == last_crop then return end
 
@@ -226,6 +231,22 @@ local function apply_crop(crop)
     mp.set_property("video-aspect-override", "-2")
     last_crop = crop
     log("applied crop=" .. crop)
+    if timing then
+        local applied_at = mp.get_property_number("time-pos", timing.apply_at)
+        telemetry(string.format(
+            "crop_timing crop=%s needed_at=%.3f detected_at=%.3f scheduled_at=%.3f applied_at=%.3f detect_lag=%.3fs apply_lag=%.3fs schedule_delay=%.3fs remux=%.3fs analyze=%.3fs",
+            crop,
+            timing.needed_at,
+            timing.detected_at,
+            timing.apply_at,
+            applied_at,
+            timing.detected_at - timing.needed_at,
+            applied_at - timing.needed_at,
+            timing.apply_at - timing.detected_at,
+            timing.remux_seconds or -1,
+            timing.analyze_seconds or -1
+        ))
+    end
 end
 
 local function build_args(path, start)
@@ -269,7 +290,8 @@ local function socket_ready()
     return utils.file_info(opts.socket) ~= nil
 end
 
-local function queue_crop(crop, scan_start, relative_seconds)
+local function queue_crop(crop, scan_start, parsed)
+    local relative_seconds = tonumber(parsed.relative_seconds) or 0
     crop = normalize_crop(crop)
     if crop == last_crop then return end
     if is_full_frame_crop(crop) and not last_crop then return end
@@ -301,11 +323,28 @@ local function queue_crop(crop, scan_start, relative_seconds)
 
     local now = mp.get_property_number("time-pos", scan_start)
     local delay = math.max(0, apply_at - now)
-    log(string.format("queued crop=%s apply_at=%.3f delay=%.3f", crop, apply_at, delay))
+    local timing = {
+        needed_at = scan_start + relative_seconds,
+        detected_at = now,
+        apply_at = apply_at,
+        remux_seconds = tonumber(parsed.remux_seconds),
+        analyze_seconds = tonumber(parsed.analyze_seconds),
+    }
+    telemetry(string.format(
+        "crop_needed crop=%s needed_at=%.3f detected_at=%.3f scheduled_at=%.3f detect_lag=%.3fs schedule_delay=%.3fs remux=%.3fs analyze=%.3fs",
+        crop,
+        timing.needed_at,
+        timing.detected_at,
+        timing.apply_at,
+        timing.detected_at - timing.needed_at,
+        timing.apply_at - timing.detected_at,
+        timing.remux_seconds or -1,
+        timing.analyze_seconds or -1
+    ))
 
     pending_timer = mp.add_timeout(delay, function()
         pending_timer = nil
-        apply_crop(crop)
+        apply_crop(crop, timing)
     end)
 end
 
@@ -381,7 +420,7 @@ local function run_scan()
         local parsed = json and utils.parse_json(json) or nil
         if parsed and parsed.ok and parsed.crop then
             scan_failures = 0
-            queue_crop(normalize_crop(parsed.crop), time_pos, tonumber(parsed.relative_seconds) or 0)
+            queue_crop(normalize_crop(parsed.crop), time_pos, parsed)
         else
             log("no stable crop found")
         end
