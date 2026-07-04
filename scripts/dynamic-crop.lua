@@ -10,19 +10,20 @@ local opts = {
     socket = "/tmp/cuda-crop-py.sock",
     legacy_script = "~~/script-modules/dynamic-crop-legacy.lua",
     fallback_failures = 2,
-    scan_seconds = 10,
-    read_ahead_seconds = 10,
-    apply_before_seconds = 1.50,
-    restore_before_seconds = 0.50,
-    initial_apply_window = 2.0,
+    scan_ahead_seconds = 2.0,
+    scan_seconds = 3,
+    read_ahead_seconds = 3,
+    apply_before_seconds = 0.02,
+    restore_before_seconds = 0.02,
+    initial_apply_window = 3.0,
     symmetry_tolerance = 96,
     max_letterbox_aspect = 2.60,
     restore_grace_seconds = 1.0,
-    scan_interval = 2,
+    scan_interval = 1,
     detect_limit = 26,
     detect_round = 2,
-    min_votes = 3,
-    sample_step = 6,
+    min_votes = 2,
+    sample_step = 1,
     mode = 4,
     read_ahead_mode = 2,
     ratio_timer = 2,
@@ -394,12 +395,13 @@ local function run_scan()
     if running or not opts.enabled then return end
 
     local path = selected_path()
-    local time_pos = mp.get_property_number("time-pos", 0)
-    if not path or not time_pos then return end
+    local playback_pos = mp.get_property_number("time-pos", 0)
+    if not path or not playback_pos then return end
+    local scan_start = playback_pos + opts.scan_ahead_seconds
 
     running = true
     start_daemon()
-    log("scan start=" .. tostring(time_pos))
+    log(string.format("scan playback=%.3f start=%.3f", playback_pos, scan_start))
 
     if not socket_ready() then
         running = false
@@ -410,7 +412,7 @@ local function run_scan()
     mp.command_native_async({
         name = "subprocess",
         args = {"ncat", "-U", opts.socket},
-        stdin_data = build_request(path, time_pos),
+        stdin_data = build_request(path, scan_start),
         capture_stdout = true,
         capture_stderr = true,
         playback_only = true,
@@ -429,7 +431,7 @@ local function run_scan()
                     .. tostring(error)
                 )
             end
-            local args = build_args(path, time_pos)
+            local args = build_args(path, scan_start)
             mp.command_native_async({
                 name = "subprocess",
                 args = args,
@@ -462,7 +464,7 @@ local function run_scan()
         local parsed = json and utils.parse_json(json) or nil
         if parsed and parsed.ok and parsed.crop then
             scan_failures = 0
-            queue_crop(normalize_crop(parsed.crop), time_pos, parsed)
+            queue_crop(normalize_crop(parsed.crop), scan_start, parsed)
         else
             log("no stable crop found")
         end
