@@ -10,6 +10,9 @@ local opts = {
     socket = "/tmp/cuda-crop-py.sock",
     legacy_script = "~~/script-modules/dynamic-crop-legacy.lua",
     fallback_failures = 2,
+    apply_mode = "panscan",
+    panscan_letterbox = 1.0,
+    panscan_full = 0.0,
     scan_ahead_seconds = 2.0,
     scan_seconds = 3,
     read_ahead_seconds = 3,
@@ -51,6 +54,10 @@ local source_height = nil
 local full_frame_restore_started_at = nil
 local source_dimensions
 local remove_crop
+
+local function set_panscan(value)
+    mp.set_property("panscan", string.format("%.3f", value))
+end
 
 local function log(message)
     if opts.debug then mp.msg.info(message) end
@@ -128,10 +135,9 @@ remove_crop = function()
     pending_crop = nil
     pending_at = nil
     full_frame_restore_started_at = nil
-    if last_crop then
-        mp.set_property("video-crop", "")
-        mp.set_property("video-aspect-override", "-2")
-    end
+    mp.set_property("video-crop", "")
+    mp.set_property("video-aspect-override", "-2")
+    set_panscan(opts.panscan_full)
     last_crop = nil
 end
 
@@ -146,12 +152,7 @@ local function reset_crop_state()
     full_frame_restore_started_at = nil
     mp.set_property("video-crop", "")
     mp.set_property("video-aspect-override", "-2")
-end
-
-local function crop_rect(crop)
-    local w, h, x, y = crop:match("^(%d+):(%d+):(%d+):(%d+)$")
-    if not w then return nil end
-    return string.format("%sx%s+%s+%s", w, h, x, y)
+    set_panscan(opts.panscan_full)
 end
 
 local function crop_parts(crop)
@@ -207,6 +208,16 @@ local function safe_letterbox_crop(crop)
         and aspect <= opts.max_letterbox_aspect
 end
 
+local function panscan_for_crop(crop)
+    if is_full_frame_crop(crop) then
+        return opts.panscan_full
+    end
+    if safe_letterbox_crop(crop) then
+        return opts.panscan_letterbox
+    end
+    return nil
+end
+
 local function json_string(value)
     return string.format("%q", value)
 end
@@ -214,18 +225,19 @@ end
 local function apply_crop(crop, timing)
     crop = normalize_crop(crop)
     if crop == last_crop then return end
+    local panscan = panscan_for_crop(crop)
 
     if is_full_frame_crop(crop) then
         if last_crop then
-            mp.set_property("video-crop", "")
-            mp.set_property("video-aspect-override", "-2")
+            set_panscan(opts.panscan_full)
             last_crop = nil
-            log("removed crop=" .. crop)
+            log(string.format("restored panscan=%.3f crop=%s", opts.panscan_full, crop))
             if timing then
                 local applied_at = mp.get_property_number("time-pos", timing.apply_at)
                 telemetry(string.format(
-                    "crop_restore crop=%s needed_at=%.3f detected_at=%.3f scheduled_at=%.3f applied_at=%.3f detect_lag=%.3fs apply_lag=%.3fs schedule_delay=%.3fs remux=%.3fs analyze=%.3fs",
+                    "panscan_restore crop=%s panscan=%.3f needed_at=%.3f detected_at=%.3f scheduled_at=%.3f applied_at=%.3f detect_lag=%.3fs apply_lag=%.3fs schedule_delay=%.3fs remux=%.3fs analyze=%.3fs",
                     crop,
+                    opts.panscan_full,
                     timing.needed_at,
                     timing.detected_at,
                     timing.apply_at,
@@ -241,23 +253,20 @@ local function apply_crop(crop, timing)
         return
     end
 
-    if not safe_letterbox_crop(crop) then
+    if not panscan then
         log("rejected unsafe crop=" .. crop)
         return
     end
 
-    local rect = crop_rect(crop)
-    if not rect then return end
-
-    mp.set_property("video-crop", rect)
-    mp.set_property("video-aspect-override", "-2")
+    set_panscan(panscan)
     last_crop = crop
-    log("applied crop=" .. crop)
+    log(string.format("applied panscan=%.3f crop=%s", panscan, crop))
     if timing then
         local applied_at = mp.get_property_number("time-pos", timing.apply_at)
         telemetry(string.format(
-            "crop_timing crop=%s needed_at=%.3f detected_at=%.3f scheduled_at=%.3f applied_at=%.3f detect_lag=%.3fs apply_lag=%.3fs schedule_delay=%.3fs remux=%.3fs analyze=%.3fs",
+            "panscan_timing crop=%s panscan=%.3f needed_at=%.3f detected_at=%.3f scheduled_at=%.3f applied_at=%.3f detect_lag=%.3fs apply_lag=%.3fs schedule_delay=%.3fs remux=%.3fs analyze=%.3fs",
             crop,
+            panscan,
             timing.needed_at,
             timing.detected_at,
             timing.apply_at,
@@ -330,8 +339,9 @@ local function queue_crop(crop, scan_start, parsed)
         if restore_age < opts.restore_grace_seconds then
             local now = mp.get_property_number("time-pos", scan_start)
             telemetry(string.format(
-                "crop_restore_deferred crop=%s needed_at=%.3f detected_at=%.3f restore_age=%.3fs restore_grace=%.3fs",
+                "panscan_restore_deferred crop=%s panscan=%.3f needed_at=%.3f detected_at=%.3f restore_age=%.3fs restore_grace=%.3fs",
                 crop,
+                opts.panscan_full,
                 needed_at,
                 now,
                 restore_age,
@@ -374,8 +384,9 @@ local function queue_crop(crop, scan_start, parsed)
         analyze_seconds = tonumber(parsed.analyze_seconds),
     }
     telemetry(string.format(
-        "crop_needed crop=%s needed_at=%.3f detected_at=%.3f scheduled_at=%.3f detect_lag=%.3fs schedule_delay=%.3fs remux=%.3fs analyze=%.3fs",
+        "panscan_needed crop=%s panscan=%.3f needed_at=%.3f detected_at=%.3f scheduled_at=%.3f detect_lag=%.3fs schedule_delay=%.3fs remux=%.3fs analyze=%.3fs",
         crop,
+        panscan_for_crop(crop) or -1,
         timing.needed_at,
         timing.detected_at,
         timing.apply_at,
@@ -486,6 +497,8 @@ mp.register_event("file-loaded", function()
     scan_failures = 0
     if opts.backend == "legacy" then
         start_legacy_backend("legacy backend selected")
+    elseif opts.apply_mode ~= "panscan" then
+        start_legacy_backend("non-panscan apply mode selected: " .. tostring(opts.apply_mode))
     elseif opts.enabled and not cuda_binary_available() then
         start_legacy_backend("missing CUDA analyzer binary: " .. opts.binary)
     elseif opts.enabled then
