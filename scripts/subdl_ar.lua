@@ -1,13 +1,12 @@
 local mp = require 'mp'
 local utils = require 'mp.utils'
 
--- Configuration: API keys from environment variables with fallback
 local CACHE_DIR = os.getenv("HOME") .. "/.cache/subdl_ar"
 local CACHE_FILE = CACHE_DIR .. "/cache.json"
 local SUBS_DIR = CACHE_DIR .. "/subtitles"
-local SUBDL_API_KEY = os.getenv("SUBDL_API_KEY") or "***REMOVED***"
-local SUBDL_API_BACKUP_KEY = os.getenv("SUBDL_API_KEY_BACKUP") or "***REMOVED***"
-local TMDB_API_KEY = os.getenv("TMDB_API_KEY") or "***REMOVED***"
+local SUBDL_API_KEY = os.getenv("SUBDL_API_KEY") or ""
+local SUBDL_API_BACKUP_KEY = os.getenv("SUBDL_API_KEY_BACKUP") or ""
+local TMDB_API_KEY = os.getenv("TMDB_API_KEY") or ""
 -- FIX 1: Remove trailing spaces from API URLs
 local SUBDL_API_URL = "https://api.subdl.com/api/v1/subtitles"
 local TMDB_API_URL = "https://api.themoviedb.org/3"
@@ -1027,7 +1026,7 @@ local function fetch_subdl_api(query_string)
 
     local subs, results, json = do_fetch(query_string)
     -- FIX 3: Correct typo SUBDL_API_BACK_KEY -> SUBDL_API_BACKUP_KEY
-    if json and json.status == false and SUBDL_API_BACKUP_KEY and SUBDL_API_BACKUP_KEY ~= SUBDL_API_KEY then
+    if json and json.status == false and SUBDL_API_BACKUP_KEY ~= "" and SUBDL_API_BACKUP_KEY ~= SUBDL_API_KEY then
         local err = tostring(json.error or ""):lower()
         local key_related = err:find("api") or err:find("limit") or err:find("request")
         if key_related then
