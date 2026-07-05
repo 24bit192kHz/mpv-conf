@@ -20,7 +20,9 @@ local opts = {
     restore_before_seconds = 0.0,
     presentation_lead_frames = 1.0,
     symmetry_tolerance = 96,
+    min_letterbox_aspect = 2.0,
     max_letterbox_aspect = 2.60,
+    min_letterbox_crop_ratio = 0.08,
     restore_grace_seconds = 1.0,
     scan_interval = 1,
     detect_limit = 26,
@@ -211,9 +213,12 @@ local function safe_letterbox_crop(crop)
 
     local bottom = sh - h - y
     local aspect = w / h
+    local removed_ratio = (sh - h) / sh
     return bottom >= 0
         and math.abs(y - bottom) <= opts.symmetry_tolerance
+        and aspect >= opts.min_letterbox_aspect
         and aspect <= opts.max_letterbox_aspect
+        and removed_ratio >= opts.min_letterbox_crop_ratio
 end
 
 local function panscan_for_crop(crop)
