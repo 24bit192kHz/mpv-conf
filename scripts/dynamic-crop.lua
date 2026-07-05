@@ -367,7 +367,7 @@ local function queue_crop(crop, scan_start, parsed)
         apply_before = opts.restore_before_seconds
     end
 
-    local apply_at = scan_start + math.max(0, relative_seconds - apply_before)
+    local apply_at = needed_at - apply_before
     if pending_crop == crop and pending_at then
         if apply_at >= pending_at - 0.05 then return end
     end
