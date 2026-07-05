@@ -181,6 +181,12 @@ local function crop_parts(crop)
     return tonumber(w), tonumber(h), tonumber(x), tonumber(y)
 end
 
+local function video_crop_rect(crop)
+    local w, h, x, y = crop_parts(crop)
+    if not w then return "" end
+    return string.format("%dx%d+%d+%d", w, h, x, y)
+end
+
 local function round_nearest(value, unit)
     return math.floor((value + unit / 2) / unit) * unit
 end
@@ -207,25 +213,29 @@ source_dimensions = function(crop)
         source_height = math.max(source_height or 0, params.h)
     end
 
-    local w, h, _x, y = crop and crop_parts(crop) or nil
-    if w and h and y and not has_video_params then
-        source_width = math.max(source_width or 0, w)
+    local w, h, x, y = crop and crop_parts(crop) or nil
+    if w and h and x and y and not has_video_params then
+        source_width = math.max(source_width or 0, w + (2 * x))
         source_height = math.max(source_height or 0, h + (2 * y))
     end
 
     return source_width, source_height
 end
 
-local function safe_letterbox_crop(crop)
+local function safe_active_crop(crop)
     local w, h, x, y = crop_parts(crop)
     local sw, sh = source_dimensions(crop)
     if not w or not sw or not sh then return false end
-    if x ~= 0 or y < 0 or w ~= sw or h >= sh then return false end
+    if x < 0 or y < 0 or w > sw or h > sh then return false end
+    if w == sw and h == sh then return false end
 
+    local right = sw - w - x
     local bottom = sh - h - y
     local aspect = w / h
-    local removed_ratio = (sh - h) / sh
-    return bottom >= 0
+    local removed_ratio = 1 - ((w * h) / (sw * sh))
+    return right >= 0
+        and bottom >= 0
+        and math.abs(x - right) <= opts.symmetry_tolerance
         and math.abs(y - bottom) <= opts.symmetry_tolerance
         and aspect >= opts.min_letterbox_aspect
         and aspect <= opts.max_letterbox_aspect
@@ -249,7 +259,7 @@ local function panscan_for_crop(crop)
     if is_full_frame_crop(crop) then
         return opts.panscan_full
     end
-    if safe_letterbox_crop(crop) then
+    if safe_active_crop(crop) then
         local w, h = crop_parts(crop)
         local sw, sh = source_dimensions(crop)
         if not w or not h or not sw or not sh then return opts.panscan_letterbox end
@@ -278,6 +288,12 @@ local function current_crop_state()
     return string.format("%d:%d:0:0", sw, sh)
 end
 
+local function full_frame_crop()
+    local sw, sh = source_dimensions(nil)
+    if not sw or not sh then return nil end
+    return string.format("%d:%d:0:0", sw, sh)
+end
+
 local function apply_crop(crop, timing)
     crop = normalize_crop(crop)
     if crop == last_crop then return end
@@ -285,6 +301,7 @@ local function apply_crop(crop, timing)
 
     if is_full_frame_crop(crop) then
         if last_crop then
+            mp.set_property("video-crop", "")
             set_panscan(opts.panscan_full)
             last_crop = nil
             log(string.format("restored panscan=%.3f crop=%s", opts.panscan_full, crop))
@@ -315,6 +332,7 @@ local function apply_crop(crop, timing)
         return
     end
 
+    mp.set_property("video-crop", video_crop_rect(crop))
     set_panscan(panscan)
     last_crop = crop
     log(string.format("applied panscan=%.3f crop=%s", panscan, crop))
@@ -446,9 +464,18 @@ local function queue_crop(crop, scan_start, parsed)
     crop = normalize_crop(crop)
     if crop == last_crop then return end
     if is_full_frame_crop(crop) and not last_crop then return end
-    if not is_full_frame_crop(crop) and not safe_letterbox_crop(crop) then
-        log("rejected unsafe crop=" .. crop)
-        return
+    if not is_full_frame_crop(crop) and not safe_active_crop(crop) then
+        if not last_crop and #pending_events == 0 then
+            log("rejected unsafe crop=" .. crop)
+            return
+        end
+        local full_crop = full_frame_crop()
+        if not full_crop then
+            log("rejected unsafe crop without source dimensions=" .. crop)
+            return
+        end
+        log("unsafe crop restores full frame crop=" .. crop)
+        crop = normalize_crop(full_crop)
     end
     local needed_at = scan_start + relative_seconds
     if is_full_frame_crop(crop) and last_crop then
