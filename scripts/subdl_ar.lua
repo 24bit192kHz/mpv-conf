@@ -2255,10 +2255,10 @@ load_media_catalog()
 
 mp.register_event("file-loaded", enhanced_auto_fetch_if_needed)
 mp.register_event("shutdown", save_runtime_cache)  -- Just save cache, don't delete any files
-mp.add_key_binding("V", "subdl_ar_next", fetch_next_sub)
+mp.add_key_binding("Ctrl+Shift+V", "subdl_ar_next", fetch_next_sub)
 mp.add_key_binding("Ctrl+V", "subdl_ar_toggle_deep", toggle_deep_search)
 mp.add_key_binding("Alt+V", "subdl_ar_search", manual_search)
 mp.register_script_message("subdl_ar_search", handle_manual_search)
 
-mp.msg.info("SubDL Arabic subtitle loader initialized (V=next, Ctrl+V=deep, Alt+V=manual search)")
+mp.msg.info("SubDL Arabic subtitle loader initialized (Ctrl+Shift+V=next, Ctrl+V=deep, Alt+V=manual search)")
 mp.msg.info("Subtitle database: " .. SUBS_DIR)

@@ -8,6 +8,7 @@ local opts = {
     project = "/home/btw/mhm/cuda-crop-py",
     binary = "/home/btw/mhm/cuda-crop-py/.venv/bin/cuda-crop-py",
     socket = "/tmp/cuda-crop-py.sock",
+    daemon_idle_timeout = 10.0,
     legacy_script = "~~/script-modules/dynamic-crop-legacy.lua",
     fallback_failures = 2,
     apply_mode = "panscan",
@@ -23,9 +24,9 @@ local opts = {
     min_letterbox_aspect = 2.0,
     max_letterbox_aspect = 2.60,
     min_letterbox_crop_ratio = 0.08,
-    restore_grace_seconds = 1.0,
+    restore_grace_seconds = 0.0,
     scan_interval = 1,
-    detect_limit = 8,
+    detect_limit = 2,
     detect_round = 2,
     min_votes = 2,
     sample_step = 1,
@@ -191,13 +192,14 @@ end
 
 source_dimensions = function(crop)
     local params = mp.get_property_native("video-params")
-    if params and params.w and params.h then
+    local has_video_params = params and params.w and params.h
+    if has_video_params then
         source_width = math.max(source_width or 0, params.w)
         source_height = math.max(source_height or 0, params.h)
     end
 
     local w, h, _x, y = crop and crop_parts(crop) or nil
-    if w and h and y then
+    if w and h and y and not has_video_params then
         source_width = math.max(source_width or 0, w)
         source_height = math.max(source_height or 0, h + (2 * y))
     end
@@ -255,7 +257,7 @@ local function apply_crop(crop, timing)
             if timing then
                 local applied_at = mp.get_property_number("time-pos", timing.apply_at)
                 telemetry(string.format(
-                    "panscan_restore crop=%s panscan=%.3f needed_at=%.3f detected_at=%.3f scheduled_at=%.3f applied_at=%.3f detect_lag=%.3fs apply_lag=%.3fs schedule_delay=%.3fs remux=%.3fs analyze=%.3fs",
+                    "panscan_restore crop=%s panscan=%.3f needed_at=%.3f detected_at=%.3f scheduled_at=%.3f applied_at=%.3f detect_lag=%.3fs apply_lag=%.3fs schedule_delay=%.3fs remux=%.3fs analyze=%.3fs detector=%s",
                     crop,
                     opts.panscan_full,
                     timing.needed_at,
@@ -266,7 +268,8 @@ local function apply_crop(crop, timing)
                     applied_at - timing.needed_at,
                     timing.apply_at - timing.detected_at,
                     timing.remux_seconds or -1,
-                    timing.analyze_seconds or -1
+                    timing.analyze_seconds or -1,
+                    timing.detector_version or "unknown"
                 ))
             end
         end
@@ -284,7 +287,7 @@ local function apply_crop(crop, timing)
     if timing then
         local applied_at = mp.get_property_number("time-pos", timing.apply_at)
         telemetry(string.format(
-            "panscan_timing crop=%s panscan=%.3f needed_at=%.3f detected_at=%.3f scheduled_at=%.3f applied_at=%.3f detect_lag=%.3fs apply_lag=%.3fs schedule_delay=%.3fs remux=%.3fs analyze=%.3fs",
+            "panscan_timing crop=%s panscan=%.3f needed_at=%.3f detected_at=%.3f scheduled_at=%.3f applied_at=%.3f detect_lag=%.3fs apply_lag=%.3fs schedule_delay=%.3fs remux=%.3fs analyze=%.3fs detector=%s",
             crop,
             panscan,
             timing.needed_at,
@@ -295,7 +298,8 @@ local function apply_crop(crop, timing)
             applied_at - timing.needed_at,
             timing.apply_at - timing.detected_at,
             timing.remux_seconds or -1,
-            timing.analyze_seconds or -1
+            timing.analyze_seconds or -1,
+            timing.detector_version or "unknown"
         ))
     end
 end
@@ -334,7 +338,14 @@ local function start_daemon()
     daemon_started = true
     mp.command_native({
         name = "subprocess",
-        args = {opts.binary, "daemon", "--socket-path", opts.socket},
+        args = {
+            opts.binary,
+            "daemon",
+            "--socket-path",
+            opts.socket,
+            "--idle-timeout",
+            tostring(opts.daemon_idle_timeout),
+        },
         detach = true,
         playback_only = false,
     })
@@ -403,9 +414,10 @@ local function queue_crop(crop, scan_start, parsed)
         apply_at = apply_at,
         remux_seconds = tonumber(parsed.remux_seconds),
         analyze_seconds = tonumber(parsed.analyze_seconds),
+        detector_version = tostring(parsed.detector_version or "unknown"),
     }
     telemetry(string.format(
-        "panscan_needed crop=%s panscan=%.3f needed_at=%.3f detected_at=%.3f scheduled_at=%.3f detect_lag=%.3fs schedule_delay=%.3fs remux=%.3fs analyze=%.3fs",
+        "panscan_needed crop=%s panscan=%.3f needed_at=%.3f detected_at=%.3f scheduled_at=%.3f detect_lag=%.3fs schedule_delay=%.3fs remux=%.3fs analyze=%.3fs detector=%s",
         crop,
         panscan_for_crop(crop) or -1,
         timing.needed_at,
@@ -414,7 +426,8 @@ local function queue_crop(crop, scan_start, parsed)
         timing.detected_at - timing.needed_at,
         timing.apply_at - timing.detected_at,
         timing.remux_seconds or -1,
-        timing.analyze_seconds or -1
+        timing.analyze_seconds or -1,
+        timing.detector_version
     ))
 
     pending_timer = mp.add_timeout(delay, function()
