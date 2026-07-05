@@ -41,13 +41,14 @@ local opts = {
     read_ahead_sync = 1,
     limit_timer = 1.0,
     crop_method = 1,
+    cycle_key = "C",
     telemetry = true,
     debug = false,
 }
 
 options.read_options(opts)
 
-local script_version = "dynamic-crop-lua-restore-guards-v3"
+local script_version = "dynamic-crop-lua-modes-v4"
 local label = "dynamic_crop_cuda_crop"
 local timer = nil
 local running = false
@@ -66,8 +67,11 @@ local last_applied_needed_at = nil
 local startup_pause_active = false
 local startup_pause_was_paused = false
 local initial_scan_completed = false
+local runtime_mode = opts.enabled and "continuous" or "disabled"
+local one_shot_locked = false
 local source_dimensions
 local schedule_next_pending
+local stop_runtime_scans
 local remove_crop
 
 local function set_panscan(value)
@@ -98,11 +102,7 @@ local function playback_ended()
     return mp.get_property_native("eof-reached") == true
 end
 
-local function stop_cuda_timers()
-    if timer then
-        timer:kill()
-        timer = nil
-    end
+local function clear_pending_events()
     if pending_timer then
         pending_timer:kill()
         pending_timer = nil
@@ -111,9 +111,26 @@ local function stop_cuda_timers()
     pending_at = nil
     pending_events = {}
     full_frame_restore_started_at = nil
+end
+
+local function scans_allowed()
+    return opts.enabled
+        and runtime_mode ~= "disabled"
+        and not (runtime_mode == "one_shot" and one_shot_locked)
+        and not legacy_started
+end
+
+local function stop_cuda_timers()
+    if timer then
+        timer:kill()
+        timer = nil
+    end
+    clear_pending_events()
+    running = false
     last_applied_needed_at = nil
     startup_pause_active = false
     initial_scan_completed = false
+    one_shot_locked = false
 end
 
 local function hold_startup_until_first_scan()
@@ -126,12 +143,21 @@ local function hold_startup_until_first_scan()
 end
 
 local function release_startup_pause()
-    if initial_scan_completed then return end
     initial_scan_completed = true
     if startup_pause_active and not startup_pause_was_paused then
         mp.set_property_bool("pause", false)
     end
     startup_pause_active = false
+end
+
+stop_runtime_scans = function()
+    if timer then
+        timer:kill()
+        timer = nil
+    end
+    clear_pending_events()
+    running = false
+    release_startup_pause()
 end
 
 local function start_legacy_backend(reason)
@@ -181,17 +207,11 @@ local function selected_path()
 end
 
 remove_crop = function()
-    if pending_timer then
-        pending_timer:kill()
-        pending_timer = nil
-    end
-    pending_crop = nil
-    pending_at = nil
-    pending_events = {}
-    full_frame_restore_started_at = nil
+    clear_pending_events()
     last_applied_needed_at = nil
     startup_pause_active = false
     initial_scan_completed = false
+    one_shot_locked = false
     mp.set_property("video-crop", "")
     mp.set_property("video-aspect-override", "-2")
     set_panscan(opts.panscan_full)
@@ -199,18 +219,13 @@ remove_crop = function()
 end
 
 local function reset_crop_state()
-    if pending_timer then
-        pending_timer:kill()
-        pending_timer = nil
-    end
-    pending_crop = nil
-    pending_at = nil
-    pending_events = {}
+    clear_pending_events()
     last_crop = nil
     full_frame_restore_started_at = nil
     last_applied_needed_at = nil
     startup_pause_active = false
     initial_scan_completed = false
+    one_shot_locked = false
     mp.set_property("video-crop", "")
     mp.set_property("video-aspect-override", "-2")
     set_panscan(opts.panscan_full)
@@ -420,15 +435,23 @@ local function apply_crop(crop, timing)
             timing.detector_version or "unknown"
         ))
     end
+    if runtime_mode == "one_shot" and not one_shot_locked then
+        one_shot_locked = true
+        stop_runtime_scans()
+        telemetry("mode=one-shot locked crop=" .. crop .. " version=" .. script_version)
+        mp.osd_message("Dynamic crop: one-shot locked")
+    end
 end
 
 local function drain_pending_events(now)
+    if not scans_allowed() then return end
     local changed = false
     while pending_events[1] and pending_events[1].apply_at <= now do
         local event = table.remove(pending_events, 1)
         changed = true
         if not stale_timeline_event(event.timing.needed_at) and not same_crop_state(event.crop, last_crop) then
             apply_crop(event.crop, event.timing)
+            if not scans_allowed() then break end
         end
     end
     if changed then
@@ -443,6 +466,10 @@ local function drain_pending_events(now)
 end
 
 schedule_next_pending = function()
+    if not scans_allowed() then
+        clear_pending_events()
+        return
+    end
     if pending_timer or #pending_events == 0 then return end
 
     local event = pending_events[1]
@@ -551,6 +578,7 @@ local function socket_ready()
 end
 
 local function queue_crop(crop, scan_start, parsed)
+    if not scans_allowed() then return end
     local relative_seconds = tonumber(parsed.relative_seconds) or 0
     crop = normalize_crop(crop)
     if same_crop_state(crop, last_crop) then return end
@@ -676,6 +704,7 @@ local function queue_crop(crop, scan_start, parsed)
 end
 
 local function queue_timeline_events(events, scan_start)
+    if not scans_allowed() then return end
     local now = mp.get_property_number("time-pos", scan_start)
     local newest_past_index = nil
     local newest_past_needed_at = -math.huge
@@ -729,7 +758,7 @@ local function queue_timeline_events(events, scan_start)
 end
 
 local function run_scan()
-    if running or not opts.enabled then return end
+    if running or not scans_allowed() then return end
     if playback_ended() then return end
 
     local path = selected_path()
@@ -756,6 +785,10 @@ local function run_scan()
         playback_only = false,
     }, function(success, result, error)
         running = false
+        if not scans_allowed() then
+            release_startup_pause()
+            return
+        end
         if playback_ended() then return end
 
         if not success or result.status ~= 0 then
@@ -778,6 +811,10 @@ local function run_scan()
                 capture_stderr = true,
                 playback_only = false,
             }, function(fallback_success, fallback_result, fallback_error)
+                if not scans_allowed() then
+                    release_startup_pause()
+                    return
+                end
                 if not fallback_success or fallback_result.status ~= 0 then
                     record_scan_failure(tostring(fallback_error or fallback_result.error_string or fallback_result.status))
                     mp.msg.warn(
@@ -819,6 +856,7 @@ local function run_scan()
 end
 
 local function schedule()
+    if not scans_allowed() then return end
     if timer then timer:kill() end
     timer = mp.add_periodic_timer(opts.scan_interval, function()
         run_scan()
@@ -828,18 +866,68 @@ local function schedule()
 end
 
 mp.observe_property("time-pos", "number", function(_name, value)
-    if value then
+    if value and scans_allowed() then
         drain_pending_events(value)
     end
 end)
+
+local function mode_message()
+    if runtime_mode == "one_shot" then
+        return one_shot_locked and "Dynamic crop: one-shot locked" or "Dynamic crop: one-shot waiting"
+    elseif runtime_mode == "disabled" then
+        return "Dynamic crop: disabled"
+    end
+    return "Dynamic crop: continuous"
+end
+
+local function set_runtime_mode(mode)
+    if mode == "disabled" then
+        runtime_mode = "disabled"
+        opts.enabled = false
+        stop_runtime_scans()
+        remove_crop()
+    elseif mode == "one_shot" then
+        runtime_mode = "one_shot"
+        opts.enabled = true
+        if last_crop then
+            one_shot_locked = true
+            stop_runtime_scans()
+        else
+            one_shot_locked = false
+            if not timer then schedule() end
+        end
+    else
+        runtime_mode = "continuous"
+        opts.enabled = true
+        one_shot_locked = false
+        reset_crop_state()
+        schedule()
+    end
+
+    local message = mode_message()
+    telemetry("mode=" .. runtime_mode .. " locked=" .. tostring(one_shot_locked) .. " version=" .. script_version)
+    mp.osd_message(message)
+end
+
+local function cycle_runtime_mode()
+    if runtime_mode == "continuous" then
+        set_runtime_mode("one_shot")
+    elseif runtime_mode == "one_shot" then
+        set_runtime_mode("disabled")
+    else
+        set_runtime_mode("continuous")
+    end
+end
 
 mp.register_event("file-loaded", function()
     source_width = nil
     source_height = nil
     scan_failures = 0
     telemetry(string.format(
-        "loaded version=%s head_guard=%.3f min_lead=%.3f tail_guard=%.3f transient_revert=%.3f scan_interval=%.3f",
+        "loaded version=%s mode=%s key=%s head_guard=%.3f min_lead=%.3f tail_guard=%.3f transient_revert=%.3f scan_interval=%.3f",
         script_version,
+        runtime_mode,
+        opts.cycle_key,
         opts.restore_head_guard_seconds,
         opts.restore_min_lead_seconds,
         opts.restore_tail_guard_seconds,
@@ -850,10 +938,11 @@ mp.register_event("file-loaded", function()
         start_legacy_backend("legacy backend selected")
     elseif opts.apply_mode ~= "panscan" then
         start_legacy_backend("non-panscan apply mode selected: " .. tostring(opts.apply_mode))
-    elseif opts.enabled and not cuda_binary_available() then
+    elseif opts.enabled and runtime_mode ~= "disabled" and not cuda_binary_available() then
         start_legacy_backend("missing CUDA analyzer binary: " .. opts.binary)
-    elseif opts.enabled then
+    elseif opts.enabled and runtime_mode ~= "disabled" then
         reset_crop_state()
+        if runtime_mode == "one_shot" then one_shot_locked = false end
         hold_startup_until_first_scan()
         schedule()
     end
@@ -867,17 +956,5 @@ mp.register_event("end-file", function()
     remove_crop()
 end)
 
-mp.add_key_binding(nil, "cuda-crop-test-toggle", function()
-    opts.enabled = not opts.enabled
-    if opts.enabled then
-        schedule()
-        mp.osd_message("cuda-crop-test enabled")
-    else
-        if timer then
-            timer:kill()
-            timer = nil
-        end
-        remove_crop()
-        mp.osd_message("cuda-crop-test disabled")
-    end
-end)
+mp.add_key_binding(opts.cycle_key ~= "" and opts.cycle_key or nil, "cycle-mode", cycle_runtime_mode)
+mp.register_script_message("cycle-mode", cycle_runtime_mode)
