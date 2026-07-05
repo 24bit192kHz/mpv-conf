@@ -14,6 +14,7 @@ local opts = {
     apply_mode = "panscan",
     panscan_letterbox = 1.0,
     panscan_full = 0.0,
+    panscan_target_aspect = 2.333333,
     scan_ahead_seconds = 2.0,
     scan_seconds = 3,
     read_ahead_seconds = 3,
@@ -52,6 +53,7 @@ local scan_failures = 0
 local pending_timer = nil
 local pending_crop = nil
 local pending_at = nil
+local pending_events = {}
 local source_width = nil
 local source_height = nil
 local full_frame_restore_started_at = nil
@@ -60,6 +62,10 @@ local remove_crop
 
 local function set_panscan(value)
     mp.set_property("panscan", string.format("%.3f", value))
+end
+
+local function clamp(value, minimum, maximum)
+    return math.min(math.max(value, minimum), maximum)
 end
 
 local function log(message)
@@ -89,6 +95,7 @@ local function stop_cuda_timers()
     end
     pending_crop = nil
     pending_at = nil
+    pending_events = {}
     full_frame_restore_started_at = nil
 end
 
@@ -145,6 +152,7 @@ remove_crop = function()
     end
     pending_crop = nil
     pending_at = nil
+    pending_events = {}
     full_frame_restore_started_at = nil
     mp.set_property("video-crop", "")
     mp.set_property("video-aspect-override", "-2")
@@ -159,6 +167,7 @@ local function reset_crop_state()
     end
     pending_crop = nil
     pending_at = nil
+    pending_events = {}
     last_crop = nil
     full_frame_restore_started_at = nil
     mp.set_property("video-crop", "")
@@ -223,12 +232,37 @@ local function safe_letterbox_crop(crop)
         and removed_ratio >= opts.min_letterbox_crop_ratio
 end
 
+local function target_aspect(sw, sh)
+    if opts.panscan_target_aspect and opts.panscan_target_aspect > 0 then
+        return opts.panscan_target_aspect
+    end
+
+    local _osd_width, _osd_height, aspect = mp.get_osd_size()
+    local source_aspect = sw / sh
+    if aspect and aspect > source_aspect then
+        return aspect
+    end
+    return source_aspect
+end
+
 local function panscan_for_crop(crop)
     if is_full_frame_crop(crop) then
         return opts.panscan_full
     end
     if safe_letterbox_crop(crop) then
-        return opts.panscan_letterbox
+        local w, h = crop_parts(crop)
+        local sw, sh = source_dimensions(crop)
+        if not w or not h or not sw or not sh then return opts.panscan_letterbox end
+
+        local source_aspect = sw / sh
+        local crop_aspect = w / h
+        local target = target_aspect(sw, sh)
+        if crop_aspect <= source_aspect or target <= source_aspect then
+            return opts.panscan_full
+        end
+
+        local amount = (crop_aspect - source_aspect) / (target - source_aspect)
+        return clamp(amount, opts.panscan_full, opts.panscan_letterbox)
     end
     return nil
 end
@@ -302,6 +336,58 @@ local function apply_crop(crop, timing)
             timing.detector_version or "unknown"
         ))
     end
+end
+
+local function schedule_next_pending()
+    if pending_timer or #pending_events == 0 then return end
+
+    local event = pending_events[1]
+    local now = mp.get_property_number("time-pos", event.timing.detected_at)
+    local delay = math.max(0, event.apply_at - now)
+    pending_crop = event.crop
+    pending_at = event.apply_at
+    pending_timer = mp.add_timeout(delay, function()
+        pending_timer = nil
+        local next_event = table.remove(pending_events, 1)
+        if next_event then
+            apply_crop(next_event.crop, next_event.timing)
+        end
+        pending_crop = nil
+        pending_at = nil
+        schedule_next_pending()
+    end)
+end
+
+local function pending_event_exists(crop, apply_at)
+    local tolerance = frame_duration_seconds()
+    for _, event in ipairs(pending_events) do
+        if event.crop == crop and math.abs(event.apply_at - apply_at) <= tolerance then
+            return true
+        end
+    end
+    return false
+end
+
+local function enqueue_pending_crop(crop, apply_at, timing)
+    if pending_event_exists(crop, apply_at) then return end
+
+    table.insert(pending_events, {
+        crop = crop,
+        apply_at = apply_at,
+        timing = timing,
+    })
+    table.sort(pending_events, function(left, right)
+        return left.apply_at < right.apply_at
+    end)
+
+    if pending_timer and pending_events[1] and pending_events[1].apply_at < (pending_at or math.huge) then
+        pending_timer:kill()
+        pending_timer = nil
+        pending_crop = nil
+        pending_at = nil
+    end
+
+    schedule_next_pending()
 end
 
 local function build_args(path, start)
@@ -394,20 +480,7 @@ local function queue_crop(crop, scan_start, parsed)
     apply_before = apply_before + (opts.presentation_lead_frames * frame_duration_seconds())
 
     local apply_at = needed_at - apply_before
-    if pending_crop == crop and pending_at then
-        if apply_at >= pending_at - 0.05 then return end
-    end
-
-    if pending_timer then
-        pending_timer:kill()
-        pending_timer = nil
-    end
-
-    pending_crop = crop
-    pending_at = apply_at
-
     local now = mp.get_property_number("time-pos", scan_start)
-    local delay = math.max(0, apply_at - now)
     local timing = {
         needed_at = needed_at,
         detected_at = now,
@@ -429,11 +502,7 @@ local function queue_crop(crop, scan_start, parsed)
         timing.analyze_seconds or -1,
         timing.detector_version
     ))
-
-    pending_timer = mp.add_timeout(delay, function()
-        pending_timer = nil
-        apply_crop(crop, timing)
-    end)
+    enqueue_pending_crop(crop, apply_at, timing)
 end
 
 local function run_scan()
@@ -507,7 +576,14 @@ local function run_scan()
 
         local json = (result.stdout or ""):match("(%b{})")
         local parsed = json and utils.parse_json(json) or nil
-        if parsed and parsed.ok and parsed.crop then
+        if parsed and parsed.ok and parsed.events then
+            scan_failures = 0
+            for _, event in ipairs(parsed.events) do
+                if event.crop then
+                    queue_crop(normalize_crop(event.crop), scan_start, event)
+                end
+            end
+        elseif parsed and parsed.ok and parsed.crop then
             scan_failures = 0
             queue_crop(normalize_crop(parsed.crop), scan_start, parsed)
         else
