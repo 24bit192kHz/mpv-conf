@@ -30,7 +30,7 @@ local opts = {
     restore_min_lead_seconds = 0.50,
     restore_tail_guard_seconds = 0.20,
     transient_revert_seconds = 0.30,
-    scan_interval = 1,
+    scan_interval = 2.0,
     detect_limit = 2,
     detect_round = 2,
     min_votes = 2,
@@ -48,7 +48,7 @@ local opts = {
 
 options.read_options(opts)
 
-local script_version = "dynamic-crop-lua-transform-v5"
+local script_version = "dynamic-crop-lua-transform-v6"
 local label = "dynamic_crop_cuda_crop"
 local timer = nil
 local running = false
