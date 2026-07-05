@@ -43,6 +43,7 @@ fi
 mkdir -p "$target"
 for item in \
     mpv.conf \
+    .env.example \
     input.conf \
     profiles.conf \
     hdr-toys.conf \
