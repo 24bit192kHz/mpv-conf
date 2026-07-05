@@ -18,6 +18,7 @@ local opts = {
     read_ahead_seconds = 3,
     apply_before_seconds = 0.0,
     restore_before_seconds = 0.0,
+    presentation_lead_frames = 1.0,
     symmetry_tolerance = 96,
     max_letterbox_aspect = 2.60,
     restore_grace_seconds = 1.0,
@@ -64,6 +65,14 @@ end
 
 local function telemetry(message)
     if opts.telemetry then mp.msg.info(message) end
+end
+
+local function frame_duration_seconds()
+    local fps = mp.get_property_number("container-fps", 0)
+    if fps <= 0 then
+        fps = 24000 / 1001
+    end
+    return 1 / fps
 end
 
 local function stop_cuda_timers()
@@ -366,6 +375,7 @@ local function queue_crop(crop, scan_start, parsed)
     if is_full_frame_crop(crop) and last_crop then
         apply_before = opts.restore_before_seconds
     end
+    apply_before = apply_before + (opts.presentation_lead_frames * frame_duration_seconds())
 
     local apply_at = needed_at - apply_before
     if pending_crop == crop and pending_at then
