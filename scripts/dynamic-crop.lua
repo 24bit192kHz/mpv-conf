@@ -15,17 +15,21 @@ local opts = {
     panscan_letterbox = 1.0,
     panscan_full = 0.0,
     panscan_target_aspect = 2.333333,
-    scan_ahead_seconds = 2.0,
+    scan_ahead_seconds = 0.0,
     scan_seconds = 3,
     read_ahead_seconds = 3,
     apply_before_seconds = 0.0,
     restore_before_seconds = 0.0,
-    presentation_lead_frames = 0.0,
+    presentation_lead_frames = 0.75,
     symmetry_tolerance = 96,
     min_letterbox_aspect = 2.0,
     max_letterbox_aspect = 2.60,
     min_letterbox_crop_ratio = 0.08,
     restore_grace_seconds = 0.0,
+    restore_head_guard_seconds = 0.30,
+    restore_min_lead_seconds = 0.50,
+    restore_tail_guard_seconds = 0.20,
+    transient_revert_seconds = 0.30,
     scan_interval = 1,
     detect_limit = 2,
     detect_round = 2,
@@ -43,6 +47,7 @@ local opts = {
 
 options.read_options(opts)
 
+local script_version = "dynamic-crop-lua-restore-guards-v3"
 local label = "dynamic_crop_cuda_crop"
 local timer = nil
 local running = false
@@ -57,7 +62,12 @@ local pending_events = {}
 local source_width = nil
 local source_height = nil
 local full_frame_restore_started_at = nil
+local last_applied_needed_at = nil
+local startup_pause_active = false
+local startup_pause_was_paused = false
+local initial_scan_completed = false
 local source_dimensions
+local schedule_next_pending
 local remove_crop
 
 local function set_panscan(value)
@@ -84,6 +94,10 @@ local function frame_duration_seconds()
     return 1 / fps
 end
 
+local function playback_ended()
+    return mp.get_property_native("eof-reached") == true
+end
+
 local function stop_cuda_timers()
     if timer then
         timer:kill()
@@ -97,6 +111,27 @@ local function stop_cuda_timers()
     pending_at = nil
     pending_events = {}
     full_frame_restore_started_at = nil
+    last_applied_needed_at = nil
+    startup_pause_active = false
+    initial_scan_completed = false
+end
+
+local function hold_startup_until_first_scan()
+    if startup_pause_active or initial_scan_completed then return end
+    startup_pause_was_paused = mp.get_property_native("pause") == true
+    startup_pause_active = true
+    if not startup_pause_was_paused then
+        mp.set_property_bool("pause", true)
+    end
+end
+
+local function release_startup_pause()
+    if initial_scan_completed then return end
+    initial_scan_completed = true
+    if startup_pause_active and not startup_pause_was_paused then
+        mp.set_property_bool("pause", false)
+    end
+    startup_pause_active = false
 end
 
 local function start_legacy_backend(reason)
@@ -154,6 +189,9 @@ remove_crop = function()
     pending_at = nil
     pending_events = {}
     full_frame_restore_started_at = nil
+    last_applied_needed_at = nil
+    startup_pause_active = false
+    initial_scan_completed = false
     mp.set_property("video-crop", "")
     mp.set_property("video-aspect-override", "-2")
     set_panscan(opts.panscan_full)
@@ -170,6 +208,9 @@ local function reset_crop_state()
     pending_events = {}
     last_crop = nil
     full_frame_restore_started_at = nil
+    last_applied_needed_at = nil
+    startup_pause_active = false
+    initial_scan_completed = false
     mp.set_property("video-crop", "")
     mp.set_property("video-aspect-override", "-2")
     set_panscan(opts.panscan_full)
@@ -195,6 +236,18 @@ local function normalize_crop(crop)
     local w, h, x, y = crop_parts(crop)
     if not w then return crop end
     return string.format("%d:%d:%d:%d", w, round_nearest(h, 4), x, y)
+end
+
+local function same_crop_state(left, right)
+    if left == right then return true end
+    if not left or not right then return false end
+    local lw, lh, lx, ly = crop_parts(normalize_crop(left))
+    local rw, rh, rx, ry = crop_parts(normalize_crop(right))
+    if not lw or not rw then return false end
+    return math.abs(lw - rw) <= 8
+        and math.abs(lh - rh) <= 8
+        and math.abs(lx - rx) <= 4
+        and math.abs(ly - ry) <= 4
 end
 
 local function is_full_frame_crop(crop)
@@ -283,6 +336,7 @@ end
 
 local function current_crop_state()
     if last_crop then return last_crop end
+    if pending_events[1] and pending_events[1].crop then return pending_events[1].crop end
     local sw, sh = source_dimensions(nil)
     if not sw or not sh then return nil end
     return string.format("%d:%d:0:0", sw, sh)
@@ -292,6 +346,16 @@ local function full_frame_crop()
     local sw, sh = source_dimensions(nil)
     if not sw or not sh then return nil end
     return string.format("%d:%d:0:0", sw, sh)
+end
+
+local function remember_applied_timeline(timing)
+    if not timing or not timing.needed_at then return end
+    last_applied_needed_at = math.max(last_applied_needed_at or -math.huge, timing.needed_at)
+end
+
+local function stale_timeline_event(needed_at)
+    if not last_applied_needed_at then return false end
+    return needed_at <= last_applied_needed_at + (frame_duration_seconds() / 2)
 end
 
 local function apply_crop(crop, timing)
@@ -304,6 +368,7 @@ local function apply_crop(crop, timing)
             mp.set_property("video-crop", "")
             set_panscan(opts.panscan_full)
             last_crop = nil
+            remember_applied_timeline(timing)
             log(string.format("restored panscan=%.3f crop=%s", opts.panscan_full, crop))
             if timing then
                 local applied_at = mp.get_property_number("time-pos", timing.apply_at)
@@ -335,6 +400,7 @@ local function apply_crop(crop, timing)
     mp.set_property("video-crop", video_crop_rect(crop))
     set_panscan(panscan)
     last_crop = crop
+    remember_applied_timeline(timing)
     log(string.format("applied panscan=%.3f crop=%s", panscan, crop))
     if timing then
         local applied_at = mp.get_property_number("time-pos", timing.apply_at)
@@ -356,7 +422,27 @@ local function apply_crop(crop, timing)
     end
 end
 
-local function schedule_next_pending()
+local function drain_pending_events(now)
+    local changed = false
+    while pending_events[1] and pending_events[1].apply_at <= now do
+        local event = table.remove(pending_events, 1)
+        changed = true
+        if not stale_timeline_event(event.timing.needed_at) and not same_crop_state(event.crop, last_crop) then
+            apply_crop(event.crop, event.timing)
+        end
+    end
+    if changed then
+        pending_crop = nil
+        pending_at = nil
+        if pending_timer then
+            pending_timer:kill()
+            pending_timer = nil
+        end
+        schedule_next_pending()
+    end
+end
+
+schedule_next_pending = function()
     if pending_timer or #pending_events == 0 then return end
 
     local event = pending_events[1]
@@ -366,34 +452,39 @@ local function schedule_next_pending()
     pending_at = event.apply_at
     pending_timer = mp.add_timeout(delay, function()
         pending_timer = nil
-        local next_event = table.remove(pending_events, 1)
-        if next_event then
-            apply_crop(next_event.crop, next_event.timing)
+        drain_pending_events(mp.get_property_number("time-pos", 0))
+        if #pending_events == 0 then
+            pending_crop = nil
+            pending_at = nil
         end
-        pending_crop = nil
-        pending_at = nil
         schedule_next_pending()
     end)
 end
 
-local function pending_event_exists(crop, apply_at)
+local function upsert_pending_event(crop, apply_at, timing)
     local tolerance = frame_duration_seconds()
-    for _, event in ipairs(pending_events) do
-        if event.crop == crop and math.abs(event.apply_at - apply_at) <= tolerance then
-            return true
+    for index, event in ipairs(pending_events) do
+        if math.abs(event.apply_at - apply_at) <= tolerance then
+            if (timing.detected_at or 0) > (event.timing.detected_at or 0) then
+                pending_events[index] = {
+                    crop = crop,
+                    apply_at = apply_at,
+                    timing = timing,
+                }
+            end
+            return
         end
     end
-    return false
-end
-
-local function enqueue_pending_crop(crop, apply_at, timing)
-    if pending_event_exists(crop, apply_at) then return end
 
     table.insert(pending_events, {
         crop = crop,
         apply_at = apply_at,
         timing = timing,
     })
+end
+
+local function enqueue_pending_crop(crop, apply_at, timing)
+    upsert_pending_event(crop, apply_at, timing)
     table.sort(pending_events, function(left, right)
         return left.apply_at < right.apply_at
     end)
@@ -462,8 +553,8 @@ end
 local function queue_crop(crop, scan_start, parsed)
     local relative_seconds = tonumber(parsed.relative_seconds) or 0
     crop = normalize_crop(crop)
-    if crop == last_crop then return end
-    if is_full_frame_crop(crop) and not last_crop then return end
+    if same_crop_state(crop, last_crop) then return end
+    if is_full_frame_crop(crop) and not last_crop and #pending_events == 0 then return end
     if not is_full_frame_crop(crop) and not safe_active_crop(crop) then
         if not last_crop and #pending_events == 0 then
             log("rejected unsafe crop=" .. crop)
@@ -478,7 +569,60 @@ local function queue_crop(crop, scan_start, parsed)
         crop = normalize_crop(full_crop)
     end
     local needed_at = scan_start + relative_seconds
-    if is_full_frame_crop(crop) and last_crop then
+    if stale_timeline_event(needed_at) then return end
+    local now = mp.get_property_number("time-pos", scan_start)
+    if is_full_frame_crop(crop) and last_crop and (needed_at - now) < opts.restore_min_lead_seconds then
+        telemetry(string.format(
+            "restore_ignored reason=short_lead crop=%s needed_at=%.3f detected_at=%.3f lead=%.3f min_lead=%.3f version=%s",
+            crop,
+            needed_at,
+            now,
+            needed_at - now,
+            opts.restore_min_lead_seconds,
+            script_version
+        ))
+        return
+    end
+    if is_full_frame_crop(crop) and now >= needed_at then
+        telemetry(string.format(
+            "restore_ignored reason=late_full crop=%s needed_at=%.3f detected_at=%.3f relative=%.3f head_guard=%.3f tail_guard=%.3f version=%s",
+            crop,
+            needed_at,
+            now,
+            relative_seconds,
+            opts.restore_head_guard_seconds,
+            opts.restore_tail_guard_seconds,
+            script_version
+        ))
+        return
+    end
+    if is_full_frame_crop(crop) and relative_seconds <= opts.restore_head_guard_seconds then
+        telemetry(string.format(
+            "restore_ignored reason=head_guard crop=%s needed_at=%.3f detected_at=%.3f relative=%.3f head_guard=%.3f tail_guard=%.3f version=%s",
+            crop,
+            needed_at,
+            now,
+            relative_seconds,
+            opts.restore_head_guard_seconds,
+            opts.restore_tail_guard_seconds,
+            script_version
+        ))
+        return
+    end
+    if is_full_frame_crop(crop) and relative_seconds >= (opts.read_ahead_seconds - opts.restore_tail_guard_seconds) then
+        telemetry(string.format(
+            "restore_ignored reason=tail_guard crop=%s needed_at=%.3f detected_at=%.3f relative=%.3f head_guard=%.3f tail_guard=%.3f version=%s",
+            crop,
+            needed_at,
+            now,
+            relative_seconds,
+            opts.restore_head_guard_seconds,
+            opts.restore_tail_guard_seconds,
+            script_version
+        ))
+        return
+    end
+    if opts.restore_grace_seconds > 0 and is_full_frame_crop(crop) and last_crop then
         if not full_frame_restore_started_at then
             full_frame_restore_started_at = needed_at
         end
@@ -507,7 +651,6 @@ local function queue_crop(crop, scan_start, parsed)
     apply_before = apply_before + (opts.presentation_lead_frames * frame_duration_seconds())
 
     local apply_at = needed_at - apply_before
-    local now = mp.get_property_number("time-pos", scan_start)
     local timing = {
         needed_at = needed_at,
         detected_at = now,
@@ -532,8 +675,62 @@ local function queue_crop(crop, scan_start, parsed)
     enqueue_pending_crop(crop, apply_at, timing)
 end
 
+local function queue_timeline_events(events, scan_start)
+    local now = mp.get_property_number("time-pos", scan_start)
+    local newest_past_index = nil
+    local newest_past_needed_at = -math.huge
+    local prepared = {}
+
+    for _, event in ipairs(events) do
+        if event.crop then
+            local relative_seconds = tonumber(event.relative_seconds) or 0
+            local needed_at = scan_start + relative_seconds
+            table.insert(prepared, {event = event, needed_at = needed_at})
+            if needed_at <= now and needed_at > newest_past_needed_at then
+                newest_past_needed_at = needed_at
+                newest_past_index = #prepared
+            end
+        end
+    end
+
+    local filtered = {}
+    local index = 1
+    local previous_crop = current_crop_state()
+    while index <= #prepared do
+        local current = prepared[index]
+        local following = prepared[index + 1]
+        if following
+            and previous_crop
+            and same_crop_state(normalize_crop(following.event.crop), previous_crop)
+            and (following.needed_at - current.needed_at) <= opts.transient_revert_seconds
+        then
+            index = index + 2
+        else
+            table.insert(filtered, current)
+            previous_crop = normalize_crop(current.event.crop)
+            index = index + 1
+        end
+    end
+    prepared = filtered
+    newest_past_index = nil
+    newest_past_needed_at = -math.huge
+    for index, prepared_event in ipairs(prepared) do
+        if prepared_event.needed_at <= now and prepared_event.needed_at > newest_past_needed_at then
+            newest_past_needed_at = prepared_event.needed_at
+            newest_past_index = index
+        end
+    end
+
+    for index, prepared_event in ipairs(prepared) do
+        if prepared_event.needed_at > now or index == newest_past_index then
+            queue_crop(normalize_crop(prepared_event.event.crop), scan_start, prepared_event.event)
+        end
+    end
+end
+
 local function run_scan()
     if running or not opts.enabled then return end
+    if playback_ended() then return end
 
     local path = selected_path()
     local playback_pos = mp.get_property_number("time-pos", 0)
@@ -556,9 +753,10 @@ local function run_scan()
         stdin_data = build_request(path, scan_start),
         capture_stdout = true,
         capture_stderr = true,
-        playback_only = true,
+        playback_only = false,
     }, function(success, result, error)
         running = false
+        if playback_ended() then return end
 
         if not success or result.status ~= 0 then
             daemon_started = false
@@ -578,7 +776,7 @@ local function run_scan()
                 args = args,
                 capture_stdout = true,
                 capture_stderr = true,
-                playback_only = true,
+                playback_only = false,
             }, function(fallback_success, fallback_result, fallback_error)
                 if not fallback_success or fallback_result.status ~= 0 then
                     record_scan_failure(tostring(fallback_error or fallback_result.error_string or fallback_result.status))
@@ -586,6 +784,7 @@ local function run_scan()
                         "cuda crop scan failed: "
                         .. tostring(fallback_error or fallback_result.error_string or fallback_result.status)
                     )
+                    release_startup_pause()
                     return
                 end
                 scan_failures = 0
@@ -597,6 +796,7 @@ local function run_scan()
                 else
                     log("no stable crop found")
                 end
+                release_startup_pause()
             end)
             return
         end
@@ -605,16 +805,15 @@ local function run_scan()
         local parsed = json and utils.parse_json(json) or nil
         if parsed and parsed.ok and parsed.events then
             scan_failures = 0
-            for _, event in ipairs(parsed.events) do
-                if event.crop then
-                    queue_crop(normalize_crop(event.crop), scan_start, event)
-                end
-            end
+            queue_timeline_events(parsed.events, scan_start)
+            release_startup_pause()
         elseif parsed and parsed.ok and parsed.crop then
             scan_failures = 0
             queue_crop(normalize_crop(parsed.crop), scan_start, parsed)
+            release_startup_pause()
         else
             log("no stable crop found")
+            release_startup_pause()
         end
     end)
 end
@@ -628,10 +827,25 @@ local function schedule()
     mp.add_timeout(0.25, run_scan)
 end
 
+mp.observe_property("time-pos", "number", function(_name, value)
+    if value then
+        drain_pending_events(value)
+    end
+end)
+
 mp.register_event("file-loaded", function()
     source_width = nil
     source_height = nil
     scan_failures = 0
+    telemetry(string.format(
+        "loaded version=%s head_guard=%.3f min_lead=%.3f tail_guard=%.3f transient_revert=%.3f scan_interval=%.3f",
+        script_version,
+        opts.restore_head_guard_seconds,
+        opts.restore_min_lead_seconds,
+        opts.restore_tail_guard_seconds,
+        opts.transient_revert_seconds,
+        opts.scan_interval
+    ))
     if opts.backend == "legacy" then
         start_legacy_backend("legacy backend selected")
     elseif opts.apply_mode ~= "panscan" then
@@ -640,6 +854,7 @@ mp.register_event("file-loaded", function()
         start_legacy_backend("missing CUDA analyzer binary: " .. opts.binary)
     elseif opts.enabled then
         reset_crop_state()
+        hold_startup_until_first_scan()
         schedule()
     end
 end)

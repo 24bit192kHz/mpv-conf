@@ -1,3 +1,9 @@
 script-opts/jellyfin.conf
 script-opts/jellyfin.conf.1
 script-opts/memo-history.log
+.omo/
+*.save
+*.save.*
+*.bk
+fonts.conf-backup
+scripts/autosubsync/.git.local/
