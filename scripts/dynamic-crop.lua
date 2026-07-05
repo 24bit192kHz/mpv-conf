@@ -11,7 +11,7 @@ local opts = {
     daemon_idle_timeout = 10.0,
     legacy_script = "~~/script-modules/dynamic-crop-legacy.lua",
     fallback_failures = 2,
-    apply_mode = "panscan",
+    apply_mode = "transform",
     panscan_letterbox = 1.0,
     panscan_full = 0.0,
     panscan_target_aspect = 2.333333,
@@ -48,7 +48,7 @@ local opts = {
 
 options.read_options(opts)
 
-local script_version = "dynamic-crop-lua-modes-v4"
+local script_version = "dynamic-crop-lua-transform-v5"
 local label = "dynamic_crop_cuda_crop"
 local timer = nil
 local running = false
@@ -76,6 +76,19 @@ local remove_crop
 
 local function set_panscan(value)
     mp.set_property("panscan", string.format("%.3f", value))
+end
+
+local function reset_transform()
+    mp.set_property_number("video-zoom", 0)
+    mp.set_property_number("video-pan-x", 0)
+    mp.set_property_number("video-pan-y", 0)
+end
+
+local function reset_render_state()
+    mp.set_property("video-crop", "")
+    mp.set_property("video-aspect-override", "-2")
+    set_panscan(opts.panscan_full)
+    reset_transform()
 end
 
 local function clamp(value, minimum, maximum)
@@ -212,9 +225,7 @@ remove_crop = function()
     startup_pause_active = false
     initial_scan_completed = false
     one_shot_locked = false
-    mp.set_property("video-crop", "")
-    mp.set_property("video-aspect-override", "-2")
-    set_panscan(opts.panscan_full)
+    reset_render_state()
     last_crop = nil
 end
 
@@ -226,9 +237,7 @@ local function reset_crop_state()
     startup_pause_active = false
     initial_scan_completed = false
     one_shot_locked = false
-    mp.set_property("video-crop", "")
-    mp.set_property("video-aspect-override", "-2")
-    set_panscan(opts.panscan_full)
+    reset_render_state()
 end
 
 local function crop_parts(crop)
@@ -345,6 +354,50 @@ local function panscan_for_crop(crop)
     return nil
 end
 
+local function transform_for_crop(crop, panscan)
+    local w, h, x, y = crop_parts(crop)
+    local sw, sh = source_dimensions(crop)
+    if not w or not h or not sw or not sh then return nil end
+    if w <= 0 or h <= 0 or sw <= 0 or sh <= 0 then return nil end
+
+    local full_zoom = math.log(math.max(sw / w, sh / h)) / math.log(2)
+    local zoom = full_zoom * panscan
+    local center_x = x + (w / 2)
+    local center_y = y + (h / 2)
+    local pan_x = -((center_x - (sw / 2)) / sw) * panscan
+    local pan_y = -((center_y - (sh / 2)) / sh) * panscan
+    return zoom, pan_x, pan_y
+end
+
+local function apply_render_crop(crop, panscan)
+    if opts.apply_mode == "transform" then
+        local zoom, pan_x, pan_y = transform_for_crop(crop, panscan)
+        if not zoom then return nil end
+        set_panscan(opts.panscan_full)
+        mp.set_property_number("video-zoom", zoom)
+        mp.set_property_number("video-pan-x", pan_x)
+        mp.set_property_number("video-pan-y", pan_y)
+        return zoom, pan_x, pan_y
+    end
+
+    reset_transform()
+    mp.set_property("video-crop", video_crop_rect(crop))
+    set_panscan(panscan)
+    return nil, nil, nil
+end
+
+local function restore_render_crop()
+    if opts.apply_mode == "transform" then
+        set_panscan(opts.panscan_full)
+        reset_transform()
+        return
+    end
+
+    mp.set_property("video-crop", "")
+    set_panscan(opts.panscan_full)
+    reset_transform()
+end
+
 local function json_string(value)
     return string.format("%q", value)
 end
@@ -380,15 +433,14 @@ local function apply_crop(crop, timing)
 
     if is_full_frame_crop(crop) then
         if last_crop then
-            mp.set_property("video-crop", "")
-            set_panscan(opts.panscan_full)
+            restore_render_crop()
             last_crop = nil
             remember_applied_timeline(timing)
-            log(string.format("restored panscan=%.3f crop=%s", opts.panscan_full, crop))
+            log(string.format("restored mode=%s panscan=%.3f crop=%s", opts.apply_mode, opts.panscan_full, crop))
             if timing then
                 local applied_at = mp.get_property_number("time-pos", timing.apply_at)
                 telemetry(string.format(
-                    "panscan_restore crop=%s panscan=%.3f needed_at=%.3f detected_at=%.3f scheduled_at=%.3f applied_at=%.3f detect_lag=%.3fs apply_lag=%.3fs schedule_delay=%.3fs remux=%.3fs analyze=%.3fs detector=%s",
+                    "panscan_restore crop=%s panscan=%.3f needed_at=%.3f detected_at=%.3f scheduled_at=%.3f applied_at=%.3f detect_lag=%.3fs apply_lag=%.3fs schedule_delay=%.3fs remux=%.3fs analyze=%.3fs detector=%s apply_mode=%s",
                     crop,
                     opts.panscan_full,
                     timing.needed_at,
@@ -400,7 +452,8 @@ local function apply_crop(crop, timing)
                     timing.apply_at - timing.detected_at,
                     timing.remux_seconds or -1,
                     timing.analyze_seconds or -1,
-                    timing.detector_version or "unknown"
+                    timing.detector_version or "unknown",
+                    opts.apply_mode
                 ))
             end
         end
@@ -412,15 +465,22 @@ local function apply_crop(crop, timing)
         return
     end
 
-    mp.set_property("video-crop", video_crop_rect(crop))
-    set_panscan(panscan)
+    local zoom, pan_x, pan_y = apply_render_crop(crop, panscan)
+    if opts.apply_mode == "transform" and not zoom then
+        log("rejected transform crop=" .. crop)
+        return
+    end
     last_crop = crop
     remember_applied_timeline(timing)
-    log(string.format("applied panscan=%.3f crop=%s", panscan, crop))
+    if opts.apply_mode == "transform" then
+        log(string.format("applied transform zoom=%.6f pan_x=%.6f pan_y=%.6f panscan=%.3f crop=%s", zoom, pan_x, pan_y, panscan, crop))
+    else
+        log(string.format("applied panscan=%.3f crop=%s", panscan, crop))
+    end
     if timing then
         local applied_at = mp.get_property_number("time-pos", timing.apply_at)
         telemetry(string.format(
-            "panscan_timing crop=%s panscan=%.3f needed_at=%.3f detected_at=%.3f scheduled_at=%.3f applied_at=%.3f detect_lag=%.3fs apply_lag=%.3fs schedule_delay=%.3fs remux=%.3fs analyze=%.3fs detector=%s",
+            "panscan_timing crop=%s panscan=%.3f needed_at=%.3f detected_at=%.3f scheduled_at=%.3f applied_at=%.3f detect_lag=%.3fs apply_lag=%.3fs schedule_delay=%.3fs remux=%.3fs analyze=%.3fs detector=%s apply_mode=%s zoom=%.6f pan_x=%.6f pan_y=%.6f",
             crop,
             panscan,
             timing.needed_at,
@@ -432,7 +492,11 @@ local function apply_crop(crop, timing)
             timing.apply_at - timing.detected_at,
             timing.remux_seconds or -1,
             timing.analyze_seconds or -1,
-            timing.detector_version or "unknown"
+            timing.detector_version or "unknown",
+            opts.apply_mode,
+            zoom or -1,
+            pan_x or 0,
+            pan_y or 0
         ))
     end
     if runtime_mode == "one_shot" and not one_shot_locked then
@@ -924,9 +988,10 @@ mp.register_event("file-loaded", function()
     source_height = nil
     scan_failures = 0
     telemetry(string.format(
-        "loaded version=%s mode=%s key=%s head_guard=%.3f min_lead=%.3f tail_guard=%.3f transient_revert=%.3f scan_interval=%.3f",
+        "loaded version=%s mode=%s apply_mode=%s key=%s head_guard=%.3f min_lead=%.3f tail_guard=%.3f transient_revert=%.3f scan_interval=%.3f",
         script_version,
         runtime_mode,
+        opts.apply_mode,
         opts.cycle_key,
         opts.restore_head_guard_seconds,
         opts.restore_min_lead_seconds,
@@ -936,8 +1001,8 @@ mp.register_event("file-loaded", function()
     ))
     if opts.backend == "legacy" then
         start_legacy_backend("legacy backend selected")
-    elseif opts.apply_mode ~= "panscan" then
-        start_legacy_backend("non-panscan apply mode selected: " .. tostring(opts.apply_mode))
+    elseif opts.apply_mode ~= "panscan" and opts.apply_mode ~= "transform" then
+        start_legacy_backend("unsupported apply mode selected: " .. tostring(opts.apply_mode))
     elseif opts.enabled and runtime_mode ~= "disabled" and not cuda_binary_available() then
         start_legacy_backend("missing CUDA analyzer binary: " .. opts.binary)
     elseif opts.enabled and runtime_mode ~= "disabled" then
