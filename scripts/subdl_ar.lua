@@ -1,12 +1,56 @@
 local mp = require 'mp'
+local options = require 'mp.options'
 local utils = require 'mp.utils'
+
+local function trim(value)
+    return tostring(value or ""):match("^%s*(.-)%s*$")
+end
+
+local function strip_quotes(value)
+    value = trim(value)
+    local first = value:sub(1, 1)
+    local last = value:sub(-1)
+    if (first == '"' and last == '"') or (first == "'" and last == "'") then
+        return value:sub(2, -2)
+    end
+    return value
+end
+
+local function read_dotenv()
+    local dotenv = {}
+    local path = mp.command_native({"expand-path", "~~/.env"})
+    local file = io.open(path, "r")
+    if not file then return dotenv end
+
+    for line in file:lines() do
+        local key, value = line:match("^%s*([%w_]+)%s*=%s*(.-)%s*$")
+        if key and not key:match("^#") then
+            dotenv[key] = strip_quotes(value)
+        end
+    end
+    file:close()
+    return dotenv
+end
+
+local dotenv = read_dotenv()
+local env_config = {
+    subdl_api_key = os.getenv("SUBDL_API_KEY") or dotenv.SUBDL_API_KEY or "",
+    subdl_api_backup_key = os.getenv("SUBDL_API_KEY_BACKUP") or dotenv.SUBDL_API_KEY_BACKUP or "",
+    tmdb_api_key = os.getenv("TMDB_API_KEY") or dotenv.TMDB_API_KEY or "",
+}
+local config = {
+    subdl_api_key = "",
+    subdl_api_backup_key = "",
+    tmdb_api_key = "",
+}
+options.read_options(config, mp.get_script_name())
 
 local CACHE_DIR = os.getenv("HOME") .. "/.cache/subdl_ar"
 local CACHE_FILE = CACHE_DIR .. "/cache.json"
 local SUBS_DIR = CACHE_DIR .. "/subtitles"
-local SUBDL_API_KEY = os.getenv("SUBDL_API_KEY") or ""
-local SUBDL_API_BACKUP_KEY = os.getenv("SUBDL_API_KEY_BACKUP") or ""
-local TMDB_API_KEY = os.getenv("TMDB_API_KEY") or ""
+local SUBDL_API_KEY = trim(config.subdl_api_key) ~= "" and config.subdl_api_key or env_config.subdl_api_key
+local SUBDL_API_BACKUP_KEY = trim(config.subdl_api_backup_key) ~= "" and config.subdl_api_backup_key or env_config.subdl_api_backup_key
+local TMDB_API_KEY = trim(config.tmdb_api_key) ~= "" and config.tmdb_api_key or env_config.tmdb_api_key
 -- FIX 1: Remove trailing spaces from API URLs
 local SUBDL_API_URL = "https://api.subdl.com/api/v1/subtitles"
 local TMDB_API_URL = "https://api.themoviedb.org/3"
@@ -93,12 +137,16 @@ local function sleep_sec(s)
     utils.subprocess({ args = {"sleep", tostring(s)}, cancellable = false })
 end
 
+local function redact_url(url)
+    return tostring(url or ""):gsub("([?&]api_key=)[^&]*", "%1<redacted>")
+end
+
 local function http_get_json(url, opts)
     local backoff = 1
     local tries = (opts and opts.max_retries) or (MAX_RETRIES + 3)
     for _ = 1, tries do
         -- FIX 2: Log the URL being fetched for debugging
-        mp.msg.debug("SubDL: fetching URL: " .. url)
+        mp.msg.debug("SubDL: fetching URL: " .. redact_url(url))
         local res = run({ "curl", "-sL", "-w", "\n%{http_code}", url })
         if res.status ~= 0 or not res.stdout then
             mp.msg.warn("SubDL: curl failed with status " .. tostring(res.status))
@@ -116,7 +164,7 @@ local function http_get_json(url, opts)
                 if json then return json, http_code end
                 return nil, http_code
             else
-                mp.msg.warn("SubDL: HTTP error " .. tostring(http_code) .. " for URL: " .. url)
+                mp.msg.warn("SubDL: HTTP error " .. tostring(http_code) .. " for URL: " .. redact_url(url))
                 return nil, http_code
             end
         end
