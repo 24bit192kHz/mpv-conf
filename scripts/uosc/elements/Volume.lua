@@ -215,6 +215,7 @@ function Volume:destroy()
 end
 
 function Volume:get_visibility()
+	if not state.is_idle and not state.has_audio then return 0 end
 	return self.slider.pressed and 1 or Elements:maybe('timeline', 'get_is_hovered') and -1
 		or Element.get_visibility(self)
 end
@@ -241,6 +242,7 @@ end
 function Volume:on_display() self:update_dimensions() end
 function Volume:on_prop_border() self:update_dimensions() end
 function Volume:on_prop_title_bar() self:update_dimensions() end
+function Volume:on_prop_volume_max() self:update_dimensions() end
 function Volume:on_controls_reflow() self:update_dimensions() end
 function Volume:on_options() self:update_dimensions() end
 
@@ -249,7 +251,7 @@ function Volume:render()
 	if visibility <= 0 then return end
 
 	-- Reset volume on secondary click
-	cursor:zone('secondary_down', self, function()
+	cursor:zone('secondary_click', self, function()
 		mp.set_property_native('mute', false)
 		mp.set_property_native('volume', 100)
 	end)

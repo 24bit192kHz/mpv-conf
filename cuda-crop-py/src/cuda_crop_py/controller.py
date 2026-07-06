@@ -60,6 +60,7 @@ class MpvIpcConnection:
         self.socket_path = socket_path
         self.client: socket.socket | None = None
         self.reader: TextIO | None = None
+        self.request_id = 0
 
     def __enter__(self) -> Self:
         self.client = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
@@ -83,16 +84,22 @@ class MpvIpcConnection:
             message = "mpv IPC connection is not open"
             raise ControllerError(message)
 
-        payload = json.dumps({"command": command}, separators=(",", ":")).encode() + b"\n"
+        self.request_id += 1
+        request_id = self.request_id
+        payload = (
+            json.dumps({"command": command, "request_id": request_id}, separators=(",", ":")).encode()
+            + b"\n"
+        )
         self.client.sendall(payload)
-        line = self.reader.readline()
-        if not line:
-            message = "mpv IPC returned no response"
-            raise ControllerError(message)
-        return parse_ipc_response(line)
+        while line := self.reader.readline():
+            response = parse_ipc_response(line, request_id)
+            if response is not None:
+                return response
+        message = "mpv IPC returned no response"
+        raise ControllerError(message)
 
 
-def parse_ipc_response(line: str) -> IpcResponse:
+def parse_ipc_response(line: str, request_id: int) -> IpcResponse | None:
     try:
         raw = json.loads(line)
     except JSONDecodeError as exc:
@@ -101,13 +108,16 @@ def parse_ipc_response(line: str) -> IpcResponse:
     if not isinstance(raw, dict):
         message = "mpv IPC returned invalid response"
         raise ControllerError(message)
+    if raw.get("request_id") != request_id:
+        return None
 
-    response: IpcResponse = {}
     error = raw.get("error")
-    if isinstance(error, str):
-        response["error"] = error
+    if not isinstance(error, str):
+        message = "mpv IPC returned invalid response"
+        raise ControllerError(message)
+    response: IpcResponse = {"error": error}
     data = raw.get("data")
-    if data is None or isinstance(data, str | int | float | bool):
+    if data is None or isinstance(data, str | int | float | bool | list | dict):
         response["data"] = data
     return response
 
@@ -152,9 +162,11 @@ def playback_state(client: MpvClient) -> PlaybackState | None:
 
 def scan_once(config: ControllerConfig, client: MpvClient, *, allow_paused: bool) -> bool:
     state = playback_state(client)
-    if state is None or state.eof_reached or state.idle_active or (state.core_idle and not allow_paused):
+    if state is None:
+        return False
+    if state.eof_reached or state.idle_active:
         raise ControllerFinishedError
-    if state.paused and not allow_paused:
+    if (state.core_idle or state.paused) and not allow_paused:
         return False
 
     scan_start = state.time_pos + config.scan_ahead_seconds

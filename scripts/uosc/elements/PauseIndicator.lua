@@ -25,7 +25,7 @@ function PauseIndicator:flash()
 	-- The pause event is not fired fast enough, and indicator starts rendering with old icon.
 	self.paused = mp.get_property_native('pause')
 	self.fadeout, self.opacity = false, 1
-	self:tween_property('opacity', 1, 0, 0)
+	self:tween_property('opacity', 1, 0, 300)
 end
 
 -- Decides whether static indicator should be visible or not.

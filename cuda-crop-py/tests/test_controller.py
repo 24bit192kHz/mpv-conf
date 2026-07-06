@@ -1,3 +1,4 @@
+import socket
 from json import loads
 from pathlib import Path
 
@@ -37,6 +38,26 @@ def config_for(tmp_path: Path) -> controller.ControllerConfig:
         min_votes=2,
         gpu_id=0,
     )
+
+
+def test_mpv_ipc_connection_ignores_async_events_before_matching_response(tmp_path: Path) -> None:
+    client_socket, server_socket = socket.socketpair()
+    connection = controller.MpvIpcConnection(tmp_path / "mpv.sock")
+    connection.client = client_socket
+    connection.reader = client_socket.makefile("r", encoding="utf-8")
+    server_socket.sendall(b'{"event":"seek"}\n{"request_id":1,"error":"success","data":42}\n')
+
+    try:
+        response = connection.command(["get_property", "time-pos"])
+        request = loads(server_socket.recv(1024).decode("utf-8"))
+    finally:
+        if connection.reader is not None:
+            connection.reader.close()
+        client_socket.close()
+        server_socket.close()
+
+    assert request["request_id"] == 1
+    assert response == {"error": "success", "data": 42}
 
 
 def test_scan_once_allows_startup_scan_while_mpv_is_paused(
@@ -107,7 +128,7 @@ def test_scan_once_skips_paused_playback_after_startup(
     assert client.messages == []
 
 
-def test_scan_once_stops_controller_when_mpv_reaches_core_idle(tmp_path: Path) -> None:
+def test_scan_once_skips_transient_core_idle_during_seek(tmp_path: Path) -> None:
     source = tmp_path / "movie.mkv"
     source.write_bytes(b"movie")
     client = FakeMpvClient(
@@ -116,6 +137,24 @@ def test_scan_once_stops_controller_when_mpv_reaches_core_idle(tmp_path: Path) -
             "time-pos": 10.0,
             "eof-reached": False,
             "idle-active": False,
+            "core-idle": True,
+            "pause": False,
+        },
+    )
+
+    assert not controller.scan_once(config_for(tmp_path), client, allow_paused=False)
+    assert client.messages == []
+
+
+def test_scan_once_stops_controller_when_mpv_is_idle(tmp_path: Path) -> None:
+    source = tmp_path / "movie.mkv"
+    source.write_bytes(b"movie")
+    client = FakeMpvClient(
+        {
+            "path": str(source),
+            "time-pos": 10.0,
+            "eof-reached": False,
+            "idle-active": True,
             "core-idle": True,
             "pause": False,
         },

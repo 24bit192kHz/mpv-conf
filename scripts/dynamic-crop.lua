@@ -22,7 +22,7 @@ local opts = {
     read_ahead_seconds = 3,
     apply_before_seconds = 0.0,
     restore_before_seconds = 0.0,
-    presentation_lead_frames = 0.75,
+    presentation_lead_frames = 0.0,
     symmetry_tolerance = 96,
     min_letterbox_aspect = 2.0,
     max_letterbox_aspect = 2.60,
@@ -50,7 +50,7 @@ local opts = {
 
 options.read_options(opts)
 
-local script_version = "dynamic-crop-lua-transform-v5"
+local script_version = "dynamic-crop-lua-transform-v8"
 local label = "dynamic_crop_cuda_crop"
 local timer = nil
 local running = false
@@ -74,6 +74,7 @@ local startup_pause_was_paused = false
 local initial_scan_completed = false
 local runtime_mode = opts.enabled and "continuous" or "disabled"
 local one_shot_locked = false
+local restore_after_seek = false
 local source_dimensions
 local schedule_next_pending
 local stop_runtime_scans
@@ -196,6 +197,7 @@ local function stop_cuda_timers()
     clear_pending_events()
     running = false
     last_applied_needed_at = nil
+    restore_after_seek = false
     startup_pause_active = false
     initial_scan_completed = false
     one_shot_locked = false
@@ -278,6 +280,7 @@ end
 remove_crop = function()
     clear_pending_events()
     last_applied_needed_at = nil
+    restore_after_seek = false
     startup_pause_active = false
     initial_scan_completed = false
     one_shot_locked = false
@@ -290,6 +293,7 @@ local function reset_crop_state()
     last_crop = nil
     full_frame_restore_started_at = nil
     last_applied_needed_at = nil
+    restore_after_seek = false
     startup_pause_active = false
     initial_scan_completed = false
     one_shot_locked = false
@@ -491,6 +495,7 @@ local function apply_crop(crop, timing)
         if last_crop then
             restore_render_crop()
             last_crop = nil
+            restore_after_seek = false
             remember_applied_timeline(timing)
             log(string.format("restored mode=%s panscan=%.3f crop=%s", opts.apply_mode, opts.panscan_full, crop))
             if timing then
@@ -527,6 +532,7 @@ local function apply_crop(crop, timing)
         return
     end
     last_crop = crop
+    restore_after_seek = false
     remember_applied_timeline(timing)
     if opts.apply_mode == "transform" then
         log(string.format("applied transform zoom=%.6f pan_x=%.6f pan_y=%.6f panscan=%.3f crop=%s", zoom, pan_x, pan_y, panscan, crop))
@@ -701,7 +707,6 @@ local function queue_crop(crop, scan_start, parsed)
     if not scans_allowed() then return end
     local relative_seconds = tonumber(parsed.relative_seconds) or 0
     crop = normalize_crop(crop)
-    if same_crop_state(crop, last_crop) then return end
     if is_full_frame_crop(crop) and not last_crop and #pending_events == 0 then return end
     if not is_full_frame_crop(crop) and not safe_active_crop(crop) then
         if not last_crop and #pending_events == 0 then
@@ -719,8 +724,17 @@ local function queue_crop(crop, scan_start, parsed)
     local needed_at = scan_start + relative_seconds
     if stale_timeline_event(needed_at) then return end
     local now = mp.get_property_number("time-pos", scan_start)
-    if is_full_frame_crop(crop) and last_crop and (needed_at - now) < opts.restore_min_lead_seconds then
-        telemetry(string.format(
+    local is_full_frame = is_full_frame_crop(crop)
+    local immediate_seek_restore = is_full_frame and restore_after_seek and last_crop
+    if not is_full_frame and restore_after_seek then
+        restore_after_seek = false
+    end
+    if same_crop_state(crop, last_crop) then
+        restore_after_seek = false
+        return
+    end
+    if is_full_frame and last_crop and not immediate_seek_restore and (needed_at - now) < opts.restore_min_lead_seconds then
+        log(string.format(
             "restore_ignored reason=short_lead crop=%s needed_at=%.3f detected_at=%.3f lead=%.3f min_lead=%.3f version=%s",
             crop,
             needed_at,
@@ -731,8 +745,8 @@ local function queue_crop(crop, scan_start, parsed)
         ))
         return
     end
-    if is_full_frame_crop(crop) and now >= needed_at then
-        telemetry(string.format(
+    if is_full_frame and not immediate_seek_restore and now >= needed_at then
+        log(string.format(
             "restore_ignored reason=late_full crop=%s needed_at=%.3f detected_at=%.3f relative=%.3f head_guard=%.3f tail_guard=%.3f version=%s",
             crop,
             needed_at,
@@ -744,8 +758,8 @@ local function queue_crop(crop, scan_start, parsed)
         ))
         return
     end
-    if is_full_frame_crop(crop) and relative_seconds <= opts.restore_head_guard_seconds then
-        telemetry(string.format(
+    if is_full_frame and not immediate_seek_restore and relative_seconds <= opts.restore_head_guard_seconds then
+        log(string.format(
             "restore_ignored reason=head_guard crop=%s needed_at=%.3f detected_at=%.3f relative=%.3f head_guard=%.3f tail_guard=%.3f version=%s",
             crop,
             needed_at,
@@ -757,8 +771,8 @@ local function queue_crop(crop, scan_start, parsed)
         ))
         return
     end
-    if is_full_frame_crop(crop) and relative_seconds >= (opts.read_ahead_seconds - opts.restore_tail_guard_seconds) then
-        telemetry(string.format(
+    if is_full_frame and not immediate_seek_restore and relative_seconds >= (opts.read_ahead_seconds - opts.restore_tail_guard_seconds) then
+        log(string.format(
             "restore_ignored reason=tail_guard crop=%s needed_at=%.3f detected_at=%.3f relative=%.3f head_guard=%.3f tail_guard=%.3f version=%s",
             crop,
             needed_at,
@@ -770,14 +784,14 @@ local function queue_crop(crop, scan_start, parsed)
         ))
         return
     end
-    if opts.restore_grace_seconds > 0 and is_full_frame_crop(crop) and last_crop then
+    if opts.restore_grace_seconds > 0 and is_full_frame and last_crop and not immediate_seek_restore then
         if not full_frame_restore_started_at then
             full_frame_restore_started_at = needed_at
         end
         local restore_age = needed_at - full_frame_restore_started_at
         if restore_age < opts.restore_grace_seconds then
             local now = mp.get_property_number("time-pos", scan_start)
-            telemetry(string.format(
+            log(string.format(
                 "panscan_restore_deferred crop=%s panscan=%.3f needed_at=%.3f detected_at=%.3f restore_age=%.3fs restore_grace=%.3fs",
                 crop,
                 opts.panscan_full,
@@ -793,7 +807,7 @@ local function queue_crop(crop, scan_start, parsed)
     end
 
     local apply_before = opts.apply_before_seconds
-    if is_full_frame_crop(crop) and last_crop then
+    if is_full_frame and last_crop then
         apply_before = opts.restore_before_seconds
     end
     apply_before = apply_before + (opts.presentation_lead_frames * frame_duration_seconds())
@@ -807,7 +821,7 @@ local function queue_crop(crop, scan_start, parsed)
         analyze_seconds = tonumber(parsed.analyze_seconds),
         detector_version = tostring(parsed.detector_version or "unknown"),
     }
-    telemetry(string.format(
+    log(string.format(
         "panscan_needed crop=%s panscan=%.3f needed_at=%.3f detected_at=%.3f scheduled_at=%.3f detect_lag=%.3fs schedule_delay=%.3fs remux=%.3fs analyze=%.3fs detector=%s",
         crop,
         panscan_for_crop(crop) or -1,
@@ -1039,9 +1053,44 @@ local function cycle_runtime_mode()
     end
 end
 
+local function scan_result_is_current(scan_start)
+    local now = mp.get_property_number("time-pos", scan_start)
+    local tolerance = math.max(opts.read_ahead_seconds + opts.scan_interval + 1.0, 5.0)
+    return math.abs(now - scan_start) <= tolerance, now, tolerance
+end
+
+local function reset_timeline_after_seek()
+    if not scans_allowed() then return end
+    clear_pending_events()
+    last_applied_needed_at = nil
+    restore_after_seek = last_crop ~= nil
+    log(string.format(
+        "seek_reset crop=%s restore_after_seek=%s version=%s",
+        tostring(last_crop),
+        tostring(restore_after_seek),
+        script_version
+    ))
+end
+
+mp.register_event("seek", reset_timeline_after_seek)
+
 mp.register_script_message("timeline-events", function(payload, scan_start_text)
     local scan_start = tonumber(scan_start_text)
     local parsed = payload and utils.parse_json(payload) or nil
+    if scan_start then
+        local current, now, tolerance = scan_result_is_current(scan_start)
+        if not current then
+            log(string.format(
+                "stale_scan_ignored scan_start=%.3f now=%.3f tolerance=%.3f version=%s",
+                scan_start,
+                now,
+                tolerance,
+                script_version
+            ))
+            release_startup_pause()
+            return
+        end
+    end
     if parsed and parsed.ok and parsed.events and scan_start then
         scan_failures = 0
         queue_timeline_events(parsed.events, scan_start)

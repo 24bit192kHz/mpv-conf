@@ -168,6 +168,7 @@ local function print_debug(msg_type, meta, label)
 end
 
 local function print_stats()
+    if not options.debug then return end
     if not s.stats and not s.stats.trusted then return end
     mp.msg.info("Meta Stats:")
     local offsets_list = {x = "", y = ""}
@@ -779,7 +780,7 @@ end
 function cleanup()
     if not s.started then return end
     if not s.paused then print_stats() end
-    mp.msg.info("Cleanup...")
+    if options.debug then mp.msg.info("Cleanup...") end
     mp.set_property("auto-window-resize", s.user_auto_window_resize)
     mp.unregister_event(playback_events)
     mp.unregister_event(collect_metadata)
@@ -790,12 +791,12 @@ function cleanup()
         if filter_state(label) then mp.commandv("vf", "remove", string.format("@%s", label)) end
     end
     if s.f_video_crop then mp.set_property("video-crop", "") end
-    mp.msg.info("Done.")
+    if options.debug then mp.msg.info("Done.") end
     s.started = false
 end
 
 local function on_start()
-    mp.msg.info("File loaded.")
+    if options.debug then mp.msg.info("File loaded.") end
     if not is_cropable() then
         mp.msg.warn("Exit, only works for videos.")
         return
