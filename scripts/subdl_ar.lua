@@ -1989,9 +1989,34 @@ local function has_arabic_sub()
     end
 end
 
+local function count_arabic_subs()
+    local count = 0
+    for _, track in ipairs(mp.get_property_native("track-list") or {}) do
+        if track.type == "sub" and (track.lang or ""):match("^ar") then
+            count = count + 1
+        end
+    end
+    return count
+end
+
+local function publish_uosc_button()
+    local ar_count = count_arabic_subs()
+    local tooltip = "Arabic Subs"
+    if DEEP_SEARCH then tooltip = tooltip .. " (Deep: ON)" end
+    local data = {
+        icon = "subtitles",
+        active = DEEP_SEARCH,
+        badge = ar_count > 0 and tostring(ar_count) or nil,
+        tooltip = tooltip,
+        command = "script-binding subdl_ar/subdl_ar_search",
+    }
+    mp.commandv("script-message-to", "uosc", "set-button", "subdl_ar", utils.format_json(data))
+end
+
 local function toggle_deep_search()
     DEEP_SEARCH = not DEEP_SEARCH
     mp.osd_message("SubDL deep search: " .. (DEEP_SEARCH and "ON" or "OFF"), 2)
+    publish_uosc_button()
 end
 
 local function scan_local_files_for_episode(show_title, season, episode, content_type)
@@ -2306,6 +2331,12 @@ mp.add_key_binding("Ctrl+Shift+V", "subdl_ar_next", fetch_next_sub)
 mp.add_key_binding("Ctrl+V", "subdl_ar_toggle_deep", toggle_deep_search)
 mp.add_key_binding("Alt+V", "subdl_ar_search", manual_search)
 mp.register_script_message("subdl_ar_search", handle_manual_search)
+mp.register_script_message("uosc-version", function()
+    publish_uosc_button()
+end)
+mp.observe_property("track-list", "native", function()
+    publish_uosc_button()
+end)
 
 mp.msg.info("SubDL Arabic subtitle loader initialized (Ctrl+Shift+V=next, Ctrl+V=deep, Alt+V=manual search)")
 mp.msg.info("Subtitle database: " .. SUBS_DIR)

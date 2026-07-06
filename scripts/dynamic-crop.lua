@@ -5,9 +5,9 @@ local utils = require "mp.utils"
 local opts = {
     enabled = true,
     backend = "cuda",
-    project = "~~/cuda-crop-py",
-    binary = "~~/cuda-crop-py/.venv/bin/cuda-crop-py",
-    socket = "/tmp/cuda-crop-py.sock",
+    project = "~~/cuda-crop-cpp",
+    binary = "~~/cuda-crop-cpp/build/cuda-crop-cpp",
+    socket = "/tmp/cuda-crop-cpp.sock",
     scan_driver = "sidecar",
     mpv_socket = "",
     daemon_idle_timeout = 10.0,
@@ -31,7 +31,7 @@ local opts = {
     restore_head_guard_seconds = 0.30,
     restore_min_lead_seconds = 0.50,
     restore_tail_guard_seconds = 0.20,
-    transient_revert_seconds = 0.30,
+    transient_revert_seconds = 0.24,
     scan_interval = 1,
     detect_limit = 2,
     detect_round = 2,
@@ -59,6 +59,7 @@ local daemon_started = false
 local sidecar_started = false
 local sidecar_command = nil
 local sidecar_socket = nil
+local ipc_server_assigned = false
 local legacy_started = false
 local scan_failures = 0
 local pending_timer = nil
@@ -97,8 +98,11 @@ local function start_sidecar()
     if sidecar_started then return end
     sidecar_started = true
     sidecar_socket = script_ipc_socket()
-    os.remove(sidecar_socket)
-    mp.set_property("input-ipc-server", sidecar_socket)
+    if not ipc_server_assigned then
+        os.remove(sidecar_socket)
+        mp.set_property("input-ipc-server", sidecar_socket)
+        ipc_server_assigned = true
+    end
     local binary = expand_path(opts.binary)
     sidecar_command = mp.command_native_async({
         name = "subprocess",
@@ -1014,6 +1018,26 @@ local function mode_message()
     return "Dynamic crop: continuous"
 end
 
+local function mode_button_icon()
+    if runtime_mode == "disabled" then return "crop_free" end
+    if runtime_mode == "one_shot" then return "crop_square" end
+    return "crop_16_9"
+end
+
+local function mode_button_active()
+    return runtime_mode ~= "disabled"
+end
+
+local function publish_uosc_button()
+    local data = {
+        icon = mode_button_icon(),
+        active = mode_button_active(),
+        tooltip = mode_message(),
+        command = "script-binding dynamic_crop/cycle-mode",
+    }
+    mp.commandv("script-message-to", "uosc", "set-button", "dynamic_crop", utils.format_json(data))
+end
+
 local function set_runtime_mode(mode)
     if mode == "disabled" then
         runtime_mode = "disabled"
@@ -1041,6 +1065,7 @@ local function set_runtime_mode(mode)
     local message = mode_message()
     telemetry("mode=" .. runtime_mode .. " locked=" .. tostring(one_shot_locked) .. " version=" .. script_version)
     mp.osd_message(message)
+    publish_uosc_button()
 end
 
 local function cycle_runtime_mode()
@@ -1104,6 +1129,7 @@ mp.register_event("file-loaded", function()
     source_width = nil
     source_height = nil
     scan_failures = 0
+    publish_uosc_button()
     telemetry(string.format(
         "loaded version=%s mode=%s apply_mode=%s key=%s head_guard=%.3f min_lead=%.3f tail_guard=%.3f transient_revert=%.3f scan_interval=%.3f",
         script_version,
@@ -1145,3 +1171,11 @@ end)
 
 mp.add_key_binding(opts.cycle_key ~= "" and opts.cycle_key or nil, "cycle-mode", cycle_runtime_mode)
 mp.register_script_message("cycle-mode", cycle_runtime_mode)
+mp.register_script_message("set-mode", function(mode)
+    if mode == "continuous" or mode == "one_shot" or mode == "disabled" then
+        set_runtime_mode(mode)
+    end
+end)
+mp.register_script_message("uosc-version", function()
+    publish_uosc_button()
+end)
