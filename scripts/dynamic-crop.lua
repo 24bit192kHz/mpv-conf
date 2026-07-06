@@ -8,6 +8,8 @@ local opts = {
     project = "/home/btw/mhm/cuda-crop-py",
     binary = "/home/btw/mhm/cuda-crop-py/.venv/bin/cuda-crop-py",
     socket = "/tmp/cuda-crop-py.sock",
+    scan_driver = "sidecar",
+    mpv_socket = "",
     daemon_idle_timeout = 10.0,
     legacy_script = "~~/script-modules/dynamic-crop-legacy.lua",
     fallback_failures = 2,
@@ -54,6 +56,9 @@ local timer = nil
 local running = false
 local last_crop = nil
 local daemon_started = false
+local sidecar_started = false
+local sidecar_command = nil
+local sidecar_socket = nil
 local legacy_started = false
 local scan_failures = 0
 local pending_timer = nil
@@ -73,6 +78,50 @@ local source_dimensions
 local schedule_next_pending
 local stop_runtime_scans
 local remove_crop
+local stop_sidecar
+
+local function script_ipc_socket()
+    if opts.mpv_socket and opts.mpv_socket ~= "" then
+        return opts.mpv_socket
+    end
+    local pid = mp.get_property_number("pid", math.floor(mp.get_time() * 1000000))
+    return string.format("/tmp/mpv-dynamic-crop-%d.sock", pid)
+end
+
+local function start_sidecar()
+    if sidecar_started then return end
+    sidecar_started = true
+    sidecar_socket = script_ipc_socket()
+    os.remove(sidecar_socket)
+    mp.set_property("input-ipc-server", sidecar_socket)
+    sidecar_command = mp.command_native_async({
+        name = "subprocess",
+        args = {
+            opts.binary,
+            "controller",
+            "--mpv-socket", sidecar_socket,
+            "--interval", tostring(opts.scan_interval),
+            "--scan-ahead", tostring(opts.scan_ahead_seconds),
+            "--duration", tostring(opts.read_ahead_seconds),
+            "--threshold", tostring(opts.detect_limit),
+            "--round-to", tostring(opts.detect_round),
+            "--sample-step", tostring(opts.sample_step),
+            "--min-votes", tostring(opts.min_votes),
+        },
+        playback_only = true,
+    }, function()
+        sidecar_started = false
+        sidecar_command = nil
+    end)
+end
+
+stop_sidecar = function()
+    if sidecar_command then
+        mp.abort_async_command(sidecar_command)
+    end
+    sidecar_started = false
+    sidecar_command = nil
+end
 
 local function set_panscan(value)
     mp.set_property("panscan", string.format("%.3f", value))
@@ -134,6 +183,7 @@ local function scans_allowed()
 end
 
 local function stop_cuda_timers()
+    stop_sidecar()
     if timer then
         timer:kill()
         timer = nil
@@ -164,6 +214,7 @@ local function release_startup_pause()
 end
 
 stop_runtime_scans = function()
+    stop_sidecar()
     if timer then
         timer:kill()
         timer = nil
@@ -983,6 +1034,18 @@ local function cycle_runtime_mode()
     end
 end
 
+mp.register_script_message("timeline-events", function(payload, scan_start_text)
+    local scan_start = tonumber(scan_start_text)
+    local parsed = payload and utils.parse_json(payload) or nil
+    if parsed and parsed.ok and parsed.events and scan_start then
+        scan_failures = 0
+        queue_timeline_events(parsed.events, scan_start)
+    elseif opts.debug then
+        log("sidecar found no stable crop")
+    end
+    release_startup_pause()
+end)
+
 mp.register_event("file-loaded", function()
     source_width = nil
     source_height = nil
@@ -1009,11 +1072,16 @@ mp.register_event("file-loaded", function()
         reset_crop_state()
         if runtime_mode == "one_shot" then one_shot_locked = false end
         hold_startup_until_first_scan()
-        schedule()
+        if opts.scan_driver == "sidecar" then
+            start_sidecar()
+        else
+            schedule()
+        end
     end
 end)
 
 mp.register_event("end-file", function()
+    stop_sidecar()
     if timer then
         timer:kill()
         timer = nil
