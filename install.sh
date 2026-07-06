@@ -51,6 +51,7 @@ for item in \
     script-modules \
     script-opts \
     scripts \
+    cuda-crop-py \
     shaders
 do
     if [ -e "$src/$item" ]; then
@@ -58,5 +59,14 @@ do
     fi
 done
 
+if [ -d "$target/cuda-crop-py" ]; then
+    if command -v uv >/dev/null 2>&1; then
+        echo "Installing cuda-crop-py dependencies"
+        (cd "$target/cuda-crop-py" && uv sync)
+    else
+        echo "uv is not installed; install it, then run: cd \"$target/cuda-crop-py\" && uv sync" >&2
+    fi
+fi
+
 echo "Installed mpv config to $target"
-echo "Dynamic crop expects cuda-crop-py at /home/btw/mhm/cuda-crop-py unless you edit mpv.conf."
+echo "Dynamic crop uses the bundled cuda-crop-py at $target/cuda-crop-py."

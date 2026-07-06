@@ -10,6 +10,12 @@ curl -fSsL https://raw.githubusercontent.com/24bit192kHz/mpv-conf/master/install
 
 The installer backs up an existing `~/.config/mpv` directory before copying this config.
 
-Dynamic crop expects `cuda-crop-py` at `/home/btw/mhm/cuda-crop-py`. Edit the `dynamic_crop-project` and `dynamic_crop-binary` lines in `mpv.conf` if your path is different.
+Dynamic crop includes the Python analyzer in `cuda-crop-py/`. The installer copies it to
+`~/.config/mpv/cuda-crop-py` and runs `uv sync` when `uv` is available. Manual setup:
+
+```sh
+cd ~/.config/mpv/cuda-crop-py
+uv sync
+```
 
 SubDL/TMDB keys are intentionally not committed. Copy `.env.example` to `.env` and fill it locally. `script-opts/subdl_ar.conf` is also supported for mpv-style local overrides.

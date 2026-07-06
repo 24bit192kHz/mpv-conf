@@ -5,8 +5,8 @@ local utils = require "mp.utils"
 local opts = {
     enabled = true,
     backend = "cuda",
-    project = "/home/btw/mhm/cuda-crop-py",
-    binary = "/home/btw/mhm/cuda-crop-py/.venv/bin/cuda-crop-py",
+    project = "~~/cuda-crop-py",
+    binary = "~~/cuda-crop-py/.venv/bin/cuda-crop-py",
     socket = "/tmp/cuda-crop-py.sock",
     scan_driver = "sidecar",
     mpv_socket = "",
@@ -80,6 +80,10 @@ local stop_runtime_scans
 local remove_crop
 local stop_sidecar
 
+local function expand_path(path)
+    return mp.command_native({"expand-path", path})
+end
+
 local function script_ipc_socket()
     if opts.mpv_socket and opts.mpv_socket ~= "" then
         return opts.mpv_socket
@@ -94,10 +98,11 @@ local function start_sidecar()
     sidecar_socket = script_ipc_socket()
     os.remove(sidecar_socket)
     mp.set_property("input-ipc-server", sidecar_socket)
+    local binary = expand_path(opts.binary)
     sidecar_command = mp.command_native_async({
         name = "subprocess",
         args = {
-            opts.binary,
+            binary,
             "controller",
             "--mpv-socket", sidecar_socket,
             "--interval", tostring(opts.scan_interval),
@@ -247,7 +252,7 @@ local function start_legacy_backend(reason)
 end
 
 local function cuda_binary_available()
-    local info = utils.file_info(opts.binary)
+    local info = utils.file_info(expand_path(opts.binary))
     return info and not info.is_dir
 end
 
@@ -267,7 +272,7 @@ end
 local function selected_path()
     local path = mp.get_property("path")
     if not path or path:match("^%a[%w+.-]*://") then return nil end
-    return mp.command_native({"expand-path", path})
+    return expand_path(path)
 end
 
 remove_crop = function()
@@ -643,7 +648,7 @@ end
 
 local function build_args(path, start)
     return {
-        opts.binary, "analyze", path,
+        expand_path(opts.binary), "analyze", path,
         "--start", string.format("%.3f", start),
         "--duration", tostring(opts.scan_seconds),
         "--threshold", tostring(opts.detect_limit),
@@ -676,7 +681,7 @@ local function start_daemon()
     mp.command_native({
         name = "subprocess",
         args = {
-            opts.binary,
+            expand_path(opts.binary),
             "daemon",
             "--socket-path",
             opts.socket,

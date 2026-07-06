@@ -1,0 +1,54 @@
+[project]
+name = "cuda-crop-py"
+version = "0.1.1"
+description = "CUDA-backed crop detector for mpv dynamic letterbox removal"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "basedpyright>=1.39.9",
+    "cupy-cuda12x[ctk]>=14.1.1",
+    "numpy>=2.5.1",
+    "nvidia-cuda-nvrtc-cu12>=12.9.86",
+    "pynvvideocodec>=2.1.0",
+    "pytest>=9.1.1",
+    "rich>=15.0.0",
+    "ruff>=0.15.20",
+    "typer>=0.26.8",
+]
+
+[project.scripts]
+cuda-crop-py = "cuda_crop_py.cli:main"
+
+[tool.uv]
+package = true
+
+[tool.ruff]
+line-length = 110
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["ALL"]
+ignore = [
+    "D",
+    "S603",
+    "S607",
+    "S101",
+    "FBT001",
+    "PLR0913",
+    "PLR2004",
+    "PLC0415",
+    "INP001",
+    "N813",
+    "T201",
+]
+
+[tool.basedpyright]
+venvPath = "."
+venv = ".venv"
+typeCheckingMode = "basic"
+reportMissingTypeStubs = false
+reportUnknownMemberType = false
+reportUnknownVariableType = false
+reportUnknownArgumentType = false
+reportUnknownParameterType = false
+reportAttributeAccessIssue = false
