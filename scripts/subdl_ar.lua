@@ -409,8 +409,8 @@ local function get_subdl_sd_id(media_type, tmdb_id, title)
             if result.type == media_type and result.sd_id then
                 subdl_sd_cache[cache_key] = result.sd_id
                 save_runtime_cache()
-                mp.msg.info(string.format("SubDL: resolved %s sd_id=%d for tmdb_id=%s (%s)", 
-                           media_type, result.sd_id, tmdb_id, result.name or title))
+                mp.msg.info(string.format("SubDL: resolved %s sd_id=%s for tmdb_id=%s (%s)",
+                           media_type, tostring(result.sd_id), tmdb_id, result.name or title))
                 return result.sd_id
             end
         end
@@ -889,10 +889,14 @@ local function process_download_content(tmp_dir, title, content_type, season, ep
 end
 
 local function download_and_load(sub, video_name, season, episode, valid_episodes, valid_pairs)
-    -- FIX 6: Remove trailing space from download URL
-    local url = "https://dl.subdl.com" .. (sub.url or sub.download_url)
+    local sub_url = sub.url or sub.download_url
+    if not sub_url then
+        mp.msg.warn("subdl_ar: sub has no url or download_url, skipping")
+        return nil
+    end
+    local url = "https://dl.subdl.com" .. sub_url
     downloaded_subs[video_name] = downloaded_subs[video_name] or {}
-    if downloaded_subs[video_name][url] then 
+    if downloaded_subs[video_name][url] then
         mp.osd_message("Subtitle loaded", 2)
         mp.commandv("sub-add", downloaded_subs[video_name][url])
         return downloaded_subs[video_name][url]
@@ -940,8 +944,11 @@ local function fetch_bulk_subs(subs_batch, video_name, season, episode, valid_ep
     mp.msg.info(string.format("SubDL: downloading %d subtitles sequentially...", #subs_batch))
 
     for i, sub in ipairs(subs_batch) do
-        -- FIX 7: Remove trailing space from download URL
-        local url = "https://dl.subdl.com" .. (sub.url or sub.download_url)
+        local sub_url = sub.url or sub.download_url
+        if not sub_url then
+            mp.msg.warn("subdl_ar: sub has no url or download_url, skipping batch item " .. i)
+        else
+        local url = "https://dl.subdl.com" .. sub_url
         local zip = string.format("%s/%d.zip", tmp_base, i)
         local extract_dir = string.format("%s/%d", tmp_base, i)
         safe_mkdir(extract_dir)
@@ -963,6 +970,7 @@ local function fetch_bulk_subs(subs_batch, video_name, season, episode, valid_ep
                 mp.msg.info("SubDL: loaded subtitle", loaded)
                 return loaded
             end
+        end
         end
     end
 
