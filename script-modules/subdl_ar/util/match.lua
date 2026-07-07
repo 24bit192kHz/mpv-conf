@@ -53,13 +53,31 @@ function M.normalize_subtitle_metadata(sub)
   sub._meta_parsed = true
 
   local pair_set, season_set, ep_set = {}, {}, {}
-  local se = tonumber(sub.season_number)
-  local ep = tonumber(sub.episode_number)
+
+  -- v1 ships season_number/episode_number; v2 ships season/episode. Both are
+  -- HINTS only — release_name parsing below is authoritative. season:0 is
+  -- dropped by add_pair_meta (se < 1 filter).
+  local se = tonumber(sub.season_number) or tonumber(sub.season)
+  local ep = tonumber(sub.episode_number) or tonumber(sub.episode)
   if se and ep then
     M.add_pair_meta(pair_set, season_set, se, ep)
     M.add_episode_meta(ep_set, ep)
   elseif ep then
     M.add_episode_meta(ep_set, ep)
+  end
+
+  -- v2 episode_end: range hint (E5..E12). Expand so the matcher can pick
+  -- this sub for any episode within [ep, episode_end].
+  local ep_end = tonumber(sub.episode_end)
+  if ep and ep_end and ep_end > ep then
+    for e = ep + 1, math.min(ep_end, MAX_EPISODE) do
+      M.add_episode_meta(ep_set, e)
+      if se then M.add_pair_meta(pair_set, season_set, se, e) end
+    end
+  end
+
+  if sub.full_season then
+    sub._is_pack = true
   end
 
   local rn = (sub.release_name or ""):lower()

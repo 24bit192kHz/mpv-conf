@@ -15,6 +15,7 @@ local url_util = require 'subdl_ar.util.url'
 local media_util = require 'subdl_ar.util.media'
 local match_util = require 'subdl_ar.util.match'
 local config_loader = require 'subdl_ar.config'
+local subdl_provider = require 'subdl_ar.providers.subdl'
 
 local trim = url_util.trim
 local strip_quotes = url_util.strip_quotes
@@ -57,7 +58,7 @@ local SUBDL_API_KEY = trim(config.subdl_api_key) ~= "" and config.subdl_api_key 
 local SUBDL_API_BACKUP_KEY = trim(config.subdl_api_backup_key) ~= "" and config.subdl_api_backup_key or env_config.subdl_api_backup_key
 local TMDB_API_KEY = trim(config.tmdb_api_key) ~= "" and config.tmdb_api_key or env_config.tmdb_api_key
 -- FIX 1: Remove trailing spaces from API URLs
-local SUBDL_API_URL = "https://api.subdl.com/api/v1/subtitles"
+local SUBDL_API_URL = "https://api.subdl.com/api/v2/subtitles"
 local TMDB_API_URL = "https://api.themoviedb.org/3"
 local CURL_TIMEOUT = 10
 local MAX_RETRIES = 2
@@ -140,12 +141,21 @@ local function sleep_sec(s)
 end
 
 local function http_get_json(url, opts)
+    opts = opts or {}
     local backoff = 1
-    local tries = (opts and opts.max_retries) or (MAX_RETRIES + 3)
+    local tries = opts.max_retries or (MAX_RETRIES + 3)
     for _ = 1, tries do
         -- FIX 2: Log the URL being fetched for debugging
         mp.msg.debug("SubDL: fetching URL: " .. redact_url(url))
-        local res = run({ "curl", "-sL", "-w", "\n%{http_code}", url })
+        local cmd = {"curl", "-sL", "-w", "\n%{http_code}"}
+        if opts.headers then
+            for _, h in ipairs(opts.headers) do
+                table.insert(cmd, "-H")
+                table.insert(cmd, h)
+            end
+        end
+        table.insert(cmd, url)
+        local res = run(cmd)
         if res.status ~= 0 or not res.stdout then
             mp.msg.warn("SubDL: curl failed with status " .. tostring(res.status))
             sleep_sec(backoff)
@@ -169,6 +179,36 @@ local function http_get_json(url, opts)
     end
     return nil, 0
 end
+
+local function http_get_raw(url, opts)
+    opts = opts or {}
+    local cmd = {"curl", "-sL", "-w", "\n%{http_code}"}
+    if opts.headers then
+        for _, h in ipairs(opts.headers) do
+            table.insert(cmd, "-H")
+            table.insert(cmd, h)
+        end
+    end
+    table.insert(cmd, url)
+    local res = run(cmd)
+    if res.status ~= 0 or not res.stdout then return nil, 0 end
+    local body, code = res.stdout:match("^([%s%S]*)\n(%d%d%d)%s*$")
+    local http_code = tonumber(code or 0)
+    if http_code >= 200 and http_code < 300 then
+        return body or "", http_code
+    end
+    mp.msg.warn("SubDL: HTTP error " .. tostring(http_code) .. " for URL: " .. redact_url(url))
+    return nil, http_code
+end
+
+subdl_provider.configure {
+    api_url = SUBDL_API_URL,
+    download_url = "https://dl.subdl.com",
+    api_key = SUBDL_API_KEY,
+    backup_key = SUBDL_API_BACKUP_KEY,
+    http_get_json = http_get_json,
+    http_get_raw = http_get_raw,
+}
 
 -- Safe subprocess helpers (avoid shell injection from os.execute)
 local function safe_mkdir(path)
@@ -358,33 +398,7 @@ end
 match_util._tmdb_season_info = get_tmdb_season_info
 
 local function fetch_subdl_api(query_string)
-    local function do_fetch(query)
-        local json = http_get_json(query)
-        if json and json.subtitles then
-            normalize_subtitles_metadata(json.subtitles)
-            return json.subtitles, json.results, json
-        end
-        return {}, json and json.results or nil, json
-    end
-
-    local subs, results, json = do_fetch(query_string)
-    -- FIX 3: Correct typo SUBDL_API_BACK_KEY -> SUBDL_API_BACKUP_KEY
-    if json and json.status == false and SUBDL_API_BACKUP_KEY ~= "" and SUBDL_API_BACKUP_KEY ~= SUBDL_API_KEY then
-        local err = tostring(json.error or ""):lower()
-        local key_related = err:find("api") or err:find("limit") or err:find("request")
-        if key_related then
-            local backup_query = query_string:gsub("api_key=" .. SUBDL_API_KEY, "api_key=" .. SUBDL_API_BACKUP_KEY, 1)
-            if backup_query ~= query_string then
-                mp.msg.warn("SubDL: primary API key failed, retrying with backup key")
-                local b_subs, b_results, b_json = do_fetch(backup_query)
-                if b_json and b_json.subtitles then
-                    return b_subs, b_results
-                end
-            end
-        end
-    end
-
-    return subs, results
+    return subdl_provider.search(query_string)
 end
 
 -- Lookup SubDL sd_id for TV/movie to handle TMDB ID conflicts
@@ -392,32 +406,19 @@ end
 
 local function get_subdl_sd_id(media_type, tmdb_id, title)
     if not tmdb_id then return nil end
-    
+
     -- Check cache first
     local cache_key = media_type .. "_" .. tostring(tmdb_id)
     if subdl_sd_cache[cache_key] then
         return subdl_sd_cache[cache_key]
     end
-    
-    -- Query SubDL to find the correct sd_id
-    local query = string.format("%s?api_key=%s&tmdb_id=%s&languages=ar",
-                               SUBDL_API_URL, SUBDL_API_KEY, tmdb_id)
-    local _, results = fetch_subdl_api(query)
-    
-    if results then
-        for _, result in ipairs(results) do
-            if result.type == media_type and result.sd_id then
-                subdl_sd_cache[cache_key] = result.sd_id
-                save_runtime_cache()
-                mp.msg.info(string.format("SubDL: resolved %s sd_id=%s for tmdb_id=%s (%s)",
-                           media_type, tostring(result.sd_id), tmdb_id, result.name or title))
-                return result.sd_id
-            end
-        end
+
+    local sd_id = subdl_provider.get_sd_id(media_type, tmdb_id, title)
+    if sd_id then
+        subdl_sd_cache[cache_key] = sd_id
+        save_runtime_cache()
     end
-    
-    mp.msg.warn(string.format("SubDL: could not find %s sd_id for tmdb_id=%s", media_type, tmdb_id))
-    return nil
+    return sd_id
 end
 
 
@@ -486,7 +487,7 @@ local function fetch_sub_list_tv(show_title, season, episode, tmdb_id)
     end
     if not DEEP_SEARCH then queries = limit_queries(queries, 3) end
     
-    for i, q in ipairs(queries) do queries[i] = string.format("%s?api_key=%s&languages=ar&subs_per_page=50&%s", SUBDL_API_URL, SUBDL_API_KEY, q) end
+    for i, q in ipairs(queries) do queries[i] = string.format("languages=ar&subs_per_page=50&%s", q) end
 
     local subs = execute_search_strategies(queries, {
         type = "TV search",
@@ -505,7 +506,7 @@ end
 local function fetch_sub_list_movie(title, year, tmdb_id)
     local queries = {}
     local candidates = normalize_title_candidates(title)
-    local function add(q) table.insert(queries, string.format("%s?api_key=%s&languages=ar&subs_per_page=50&%s", SUBDL_API_URL, SUBDL_API_KEY, q)) end
+    local function add(q) table.insert(queries, string.format("languages=ar&subs_per_page=50&%s", q)) end
     
     if tmdb_id then add("tmdb_id=" .. tmdb_id) end
     add("film_name=" .. url_safe(title))
@@ -564,7 +565,7 @@ local function fetch_sub_list_anime(title, season, episode, tmdb_id)
     local queries = {}
     local sd_id = tmdb_id and get_subdl_sd_id("tv", tmdb_id, title)
     local candidates = normalize_title_candidates(title)
-    local function add(q) table.insert(queries, string.format("%s?api_key=%s&languages=ar&subs_per_page=50&%s", SUBDL_API_URL, SUBDL_API_KEY, q)) end
+    local function add(q) table.insert(queries, string.format("languages=ar&subs_per_page=50&%s", q)) end
 
     local max_mapping_queries = DEEP_SEARCH and math.min(#cour_mappings, 10) or math.min(#cour_mappings, 6)
 
@@ -889,17 +890,22 @@ local function process_download_content(tmp_dir, title, content_type, season, ep
 end
 
 local function download_and_load(sub, video_name, season, episode, valid_episodes, valid_pairs)
-    local sub_url = sub.url or sub.download_url
-    if not sub_url then
-        mp.msg.warn("subdl_ar: sub has no url or download_url, skipping")
-        return nil
-    end
-    local url = "https://dl.subdl.com" .. sub_url
     downloaded_subs[video_name] = downloaded_subs[video_name] or {}
-    if downloaded_subs[video_name][url] then
+
+    local sub_id = sub and (sub.nId or sub.id or sub.sd_id)
+    local cache_key = sub_id and subdl_provider.api_download_url(sub_id)
+                       or sub.url or sub.download_url
+    if cache_key and downloaded_subs[video_name][cache_key] then
         mp.osd_message("Subtitle loaded", 2)
-        mp.commandv("sub-add", downloaded_subs[video_name][url])
-        return downloaded_subs[video_name][url]
+        mp.commandv("sub-add", downloaded_subs[video_name][cache_key])
+        return downloaded_subs[video_name][cache_key]
+    end
+
+    local body, code, dl_url = subdl_provider.download(sub)
+    if not body or body == "" or not dl_url then
+        mp.msg.warn("subdl_ar: empty download body for sub id=" .. tostring(sub_id)
+                    .. " http_code=" .. tostring(code))
+        return nil
     end
 
     local path = mp.get_property("path")
@@ -912,18 +918,13 @@ local function download_and_load(sub, video_name, season, episode, valid_episode
 
     local tmp = "/tmp/subdl_extract_" .. os.time()
     safe_mkdir(tmp)
-    local zip = tmp .. "/download.zip"
-    if run({"curl", "-sL", "-o", zip, "-H", "User-Agent: mpv", "-H", "Accept: application/zip", url}).status ~= 0 then safe_rm_rf(tmp); return nil end
-    -- Try unzip; if it fails, treat as direct subtitle file
-    local unzip_res = safe_unzip(zip, tmp)
-    if unzip_res.status == 0 then
-        os.remove(zip)
-    else
-        local direct = tmp .. "/" .. sanitize_filename(title) .. ".srt"
-        os.rename(zip, direct)
-    end
+    local out = tmp .. "/" .. sanitize_filename(title) .. ".srt"
+    local f = io.open(out, "w")
+    if not f then safe_rm_rf(tmp); return nil end
+    f:write(body)
+    f:close()
 
-    local sub_file = process_download_content(tmp, title, content_type, season, episode, valid_episodes, valid_pairs, video_name, url)
+    local sub_file = process_download_content(tmp, title, content_type, season, episode, valid_episodes, valid_pairs, video_name, dl_url)
     safe_rm_rf(tmp)
     if sub_file then mp.commandv("sub-add", sub_file); mp.msg.info("SubDL: loaded subtitle", sub_file) end
     return sub_file
@@ -937,40 +938,40 @@ local function fetch_bulk_subs(subs_batch, video_name, season, episode, valid_ep
         content_type = media.episode and "tv" or "movie"
     end
     local title = media.title or video_name or "unknown"
-    
+
     local tmp_base = "/tmp/subdl_batch_" .. os.time()
     safe_mkdir(tmp_base)
 
     mp.msg.info(string.format("SubDL: downloading %d subtitles sequentially...", #subs_batch))
 
     for i, sub in ipairs(subs_batch) do
-        local sub_url = sub.url or sub.download_url
-        if not sub_url then
-            mp.msg.warn("subdl_ar: sub has no url or download_url, skipping batch item " .. i)
+        local sub_id = sub and (sub.nId or sub.id or sub.sd_id)
+        if not sub_id then
+            mp.msg.warn("subdl_ar: sub has no id, skipping batch item " .. i)
         else
-        local url = "https://dl.subdl.com" .. sub_url
-        local zip = string.format("%s/%d.zip", tmp_base, i)
-        local extract_dir = string.format("%s/%d", tmp_base, i)
-        safe_mkdir(extract_dir)
+            local extract_dir = string.format("%s/%d", tmp_base, i)
+            safe_mkdir(extract_dir)
 
-        local res = run({ "curl", "-sL", "-o", zip, "-H", "User-Agent: mpv", "-H", "Accept: application/zip", url })
-        if res.status == 0 and utils.file_info(zip) then
-            local unzip_res = safe_unzip(zip, extract_dir)
-            if unzip_res.status == 0 then
-                os.remove(zip)
+            local body, code, dl_url = subdl_provider.download(sub)
+            if body and body ~= "" and dl_url then
+                local out = extract_dir .. "/" .. sanitize_filename(title) .. ".srt"
+                local f = io.open(out, "w")
+                if f then
+                    f:write(body)
+                    f:close()
+
+                    local loaded = process_download_content(extract_dir, title, content_type, season, episode, valid_episodes, valid_pairs, video_name, dl_url)
+                    if loaded then
+                        safe_rm_rf(tmp_base)
+                        mp.commandv("sub-add", loaded)
+                        mp.msg.info("SubDL: loaded subtitle", loaded)
+                        return loaded
+                    end
+                end
             else
-                local direct = extract_dir .. "/" .. sanitize_filename(title) .. ".srt"
-                os.rename(zip, direct)
+                mp.msg.warn("subdl_ar: empty download body for batch item " .. i
+                            .. " http_code=" .. tostring(code))
             end
-
-            local loaded = process_download_content(extract_dir, title, content_type, season, episode, valid_episodes, valid_pairs, video_name, url)
-            if loaded then
-                safe_rm_rf(tmp_base)
-                mp.commandv("sub-add", loaded)
-                mp.msg.info("SubDL: loaded subtitle", loaded)
-                return loaded
-            end
-        end
         end
     end
 
@@ -1326,8 +1327,8 @@ local function handle_manual_search(query)
     
     mp.osd_message("Searching: " .. query, 2)
     
-    local api_url = string.format("%s?api_key=%s&query=%s&languages=ar&subs_per_page=50",
-                             SUBDL_API_URL, SUBDL_API_KEY, url_safe(query))
+    local api_url = string.format("query=%s&languages=ar&subs_per_page=50",
+                                  url_safe(query))
     
     local subs = fetch_subdl_api(api_url)
     if #subs == 0 then
