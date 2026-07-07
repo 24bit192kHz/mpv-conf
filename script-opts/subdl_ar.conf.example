@@ -2,4 +2,4 @@ subdl_api_key=
 subdl_api_backup_key=
 tmdb_api_key=
 tvdb_api_key=
-use_tvdb_cour=false
+use_tvdb_cour=no

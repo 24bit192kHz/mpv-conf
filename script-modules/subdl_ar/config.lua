@@ -34,8 +34,6 @@ function M.load(mp, options)
     subdl_api_key = os.getenv("SUBDL_API_KEY") or dotenv.SUBDL_API_KEY or "",
     subdl_api_backup_key = os.getenv("SUBDL_API_KEY_BACKUP") or dotenv.SUBDL_API_KEY_BACKUP or "",
     tmdb_api_key = os.getenv("TMDB_API_KEY") or dotenv.TMDB_API_KEY or "",
-    opensubs_api_key = os.getenv("OPENSUBS_API_KEY") or dotenv.OPENSUBS_API_KEY or "",
-    opensubs_app_name = os.getenv("OPENSUBS_APP_NAME") or dotenv.OPENSUBS_APP_NAME or "",
     tvdb_api_key = os.getenv("TVDB_API_KEY") or dotenv.TVDB_API_KEY or "",
     use_tvdb_cour = os.getenv("USE_TVDB_COUR") == "1" or dotenv.USE_TVDB_COUR == "1",
   }
@@ -58,8 +56,6 @@ function M.load(mp, options)
     tmdb_api_key = trim(config.tmdb_api_key) ~= "" and config.tmdb_api_key or env_config.tmdb_api_key,
     tvdb_api_key = trim(config.tvdb_api_key) ~= "" and config.tvdb_api_key or env_config.tvdb_api_key,
     use_tvdb_cour = config.use_tvdb_cour or env_config.use_tvdb_cour,
-    opensubs_api_key = env_config.opensubs_api_key,
-    opensubs_app_name = env_config.opensubs_app_name,
   }
 end
 
