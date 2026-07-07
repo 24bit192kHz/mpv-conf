@@ -46,6 +46,8 @@ M._cfg = {
 M._http = {
   get_json = function(_url, _opts) return nil, 0 end,
   get_raw  = function(_url, _opts) return nil, 0 end,
+  get_json_async = nil,
+  get_raw_async = nil,
 }
 
 -- Logger: prefer mp.msg when mpv's runtime is available, otherwise no-op so
@@ -64,6 +66,8 @@ function M.configure(deps)
   for k, v in pairs(deps) do
     if k == "http_get_json" then M._http.get_json = v
     elseif k == "http_get_raw" then M._http.get_raw = v
+    elseif k == "http_get_json_async" then M._http.get_json_async = v
+    elseif k == "http_get_raw_async" then M._http.get_raw_async = v
     else M._cfg[k] = v end
   end
 end
@@ -168,11 +172,84 @@ function M.download(sub)
 
   local url = M.api_download_url(sub_id)
   local headers = auth_headers()
-  -- Hint that we want the raw subtitle body, not HTML/JSON wrapping.
   table.insert(headers, "Accept: text/plain, application/octet-stream")
 
   local body, code = M._http.get_raw(url, { headers = headers })
   return body, code, url
+end
+
+function M.search_async(query_string, opts, on_done)
+  if not M._http.get_json_async then
+    local subs, results = M.search(query_string, opts)
+    if on_done then on_done(subs, results) end
+    return nil
+  end
+  opts = opts or {}
+  if opts.unpack ~= false then
+    query_string = query_string .. "&unpack=1"
+  end
+  local url = M._cfg.api_url .. "?" .. query_string
+  return M._http.get_json_async(url, { headers = auth_headers(), api_key = M._cfg.api_key, backup_key = M._cfg.backup_key }, function(success, json, http_code, remaining)
+    if not success or not json then
+      if on_done then on_done({}, nil) end
+      return
+    end
+    if json.subtitles then
+      match_util.normalize_subtitles_metadata(json.subtitles)
+    end
+    local subs = json.subtitles or {}
+    if json.status == false and M._cfg.backup_key ~= "" and M._cfg.backup_key ~= M._cfg.api_key then
+      local err_str = json.error and type(json.error) == "string" and json.error or ""
+      local err_code = json.error and json.error.code and tostring(json.error.code) or ""
+      local combined = (err_str .. " " .. err_code):lower()
+      if combined:find("api") or combined:find("limit") or combined:find("request") or combined:find("quota") then
+        log("warn", "SubDL: async primary key failed, retrying with backup")
+        local orig = M._cfg.api_key
+        M._cfg.api_key = M._cfg.backup_key
+        local retry_url = M._cfg.api_url .. "?" .. query_string
+        return M._http.get_json_async(retry_url, { headers = auth_headers(), api_key = M._cfg.api_key, backup_key = M._cfg.backup_key }, function(s2, j2)
+          M._cfg.api_key = orig
+          if s2 and j2 and j2.subtitles then
+            match_util.normalize_subtitles_metadata(j2.subtitles)
+            if on_done then on_done(j2.subtitles, j2.results) end
+          else
+            if on_done then on_done(subs, json.results) end
+          end
+        end)
+      end
+    end
+    if on_done then on_done(subs, json.results) end
+  end)
+end
+
+function M.download_async(sub, on_done)
+  if not M._http.get_raw_async then
+    local body, code, url = M.download(sub)
+    if on_done then on_done(body, code, url) end
+    return nil
+  end
+  if type(sub) ~= "table" then
+    if on_done then on_done(nil, 0, nil) end
+    return nil
+  end
+  local sub_id = sub.nId or sub.id or sub.sd_id
+  if not sub_id then
+    if on_done then on_done(nil, 0, nil) end
+    return nil
+  end
+  local url = M.api_download_url(sub_id)
+  local headers = auth_headers()
+  table.insert(headers, "Accept: text/plain, application/octet-stream")
+  return M._http.get_raw_async(url, {
+    headers = headers,
+    api_key = M._cfg.api_key,
+    backup_key = M._cfg.backup_key,
+    osd_label = "Downloading...",
+  }, function(success, result)
+    if on_done then
+      on_done(result.body or result.stdout, result.http_code or 0, url)
+    end
+  end)
 end
 
 return M

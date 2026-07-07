@@ -17,6 +17,7 @@ local match_util = require 'subdl_ar.util.match'
 local config_loader = require 'subdl_ar.config'
 local subdl_provider = require 'subdl_ar.providers.subdl'
 local cache_mod = require 'subdl_ar.cache'
+local http_mod = require 'subdl_ar.http'
 
 local trim = url_util.trim
 local strip_quotes = url_util.strip_quotes
@@ -118,7 +119,74 @@ local load_runtime_cache
 
 
 -- OSD feedback helper
+local function osd_overlay_update(text)
+end
+local current_osd_overlay = nil
+local function osd_show(text)
+    if not mp.create_osd_overlay then return end
+    if not current_osd_overlay then
+        current_osd_overlay = mp.create_osd_overlay("ass-events")
+    end
+    if current_osd_overlay then
+        current_osd_overlay:update({ data = text })
+    end
+end
+local function osd_remove()
+    if current_osd_overlay then
+        current_osd_overlay:remove()
+        current_osd_overlay = nil
+    end
+end
 
+local current_async_handle = nil
+
+local function abort_inflight()
+    if current_async_handle then
+        mp.abort_async_command(current_async_handle)
+        current_async_handle = nil
+    end
+end
+
+local function http_get_json_async(url, opts, on_done)
+    opts = opts or {}
+    local headers = opts.headers or {}
+    local api_key = opts.api_key or SUBDL_API_KEY
+    local backup_key = opts.backup_key or SUBDL_API_BACKUP_KEY
+    current_async_handle = http_mod.request_async(url, {
+        api_key = api_key,
+        backup_key = backup_key,
+        headers = headers,
+        timeout = opts.timeout,
+    }, function(success, result)
+        current_async_handle = nil
+        if not success or not result.body then
+            if on_done then on_done(nil, 0) end
+            return
+        end
+        local json = utils.parse_json(result.body)
+        if json then
+            if on_done then on_done(json, result.http_code or 0) end
+        else
+            if on_done then on_done(nil, 0) end
+        end
+    end)
+end
+
+local function http_get_raw_async(url, opts, on_done)
+    opts = opts or {}
+    local headers = opts.headers or {}
+    local api_key = opts.api_key or SUBDL_API_KEY
+    local backup_key = opts.backup_key or SUBDL_API_BACKUP_KEY
+    current_async_handle = http_mod.request_async(url, {
+        api_key = api_key,
+        backup_key = backup_key,
+        headers = headers,
+        timeout = opts.timeout,
+    }, function(success, result)
+        current_async_handle = nil
+        if on_done then on_done(result.body, result.http_code or 0) end
+    end)
+end
 
 -- Run command with timeout and retry logic
 local function run(cmd)
@@ -134,11 +202,6 @@ local function run(cmd)
         if i < MAX_RETRIES then mp.msg.warn(string.format("Command failed, retrying (%d/%d)...", i + 1, MAX_RETRIES)) end
         if i == MAX_RETRIES then return res end
     end
-end
-
-local function sleep_sec(s)
-    if not s or s <= 0 then return end
-    utils.subprocess({ args = {"sleep", tostring(s)}, cancellable = false })
 end
 
 local function http_get_json(url, opts)
@@ -159,14 +222,12 @@ local function http_get_json(url, opts)
         local res = run(cmd)
         if res.status ~= 0 or not res.stdout then
             mp.msg.warn("SubDL: curl failed with status " .. tostring(res.status))
-            sleep_sec(backoff)
             backoff = math.min(backoff * 2, 10)
         else
             local body, code = res.stdout:match("^([%s%S]*)\n(%d%d%d)%s*$")
             local http_code = tonumber(code or 0)
             if http_code == 429 then
-                mp.msg.warn("HTTP 429: backing off before retry")
-                sleep_sec(backoff)
+                mp.msg.warn("HTTP 429: retrying (sync fallback, no blocking sleep)")
                 backoff = math.min(backoff * 2, 10)
             elseif http_code >= 200 and http_code < 300 then
                 local json = utils.parse_json(body or "")
@@ -209,6 +270,8 @@ subdl_provider.configure {
     backup_key = SUBDL_API_BACKUP_KEY,
     http_get_json = http_get_json,
     http_get_raw = http_get_raw,
+    http_get_json_async = http_get_json_async,
+    http_get_raw_async = http_get_raw_async,
 }
 
 -- Safe subprocess helpers (avoid shell injection from os.execute)
@@ -889,7 +952,7 @@ local function process_download_content(tmp_dir, title, content_type, season, ep
     return nil
 end
 
-local function download_and_load(sub, video_name, season, episode, valid_episodes, valid_pairs)
+local function download_and_load(sub, video_name, season, episode, valid_episodes, valid_pairs, on_done)
     downloaded_subs[video_name] = downloaded_subs[video_name] or {}
 
     local sub_id = sub and (sub.nId or sub.id or sub.sd_id)
@@ -898,39 +961,48 @@ local function download_and_load(sub, video_name, season, episode, valid_episode
     if cache_key and downloaded_subs[video_name][cache_key] then
         mp.osd_message("Subtitle loaded", 2)
         mp.commandv("sub-add", downloaded_subs[video_name][cache_key])
+        if on_done then on_done(downloaded_subs[video_name][cache_key]) end
         return downloaded_subs[video_name][cache_key]
     end
 
-    local body, code, dl_url = subdl_provider.download(sub)
-    if not body or body == "" or not dl_url then
-        mp.msg.warn("subdl_ar: empty download body for sub id=" .. tostring(sub_id)
-                    .. " http_code=" .. tostring(code))
-        return nil
+    local function handle_download(body, code, dl_url)
+        if not body or body == "" or not dl_url then
+            mp.msg.warn("subdl_ar: empty download body for sub id=" .. tostring(sub_id)
+                        .. " http_code=" .. tostring(code))
+            if on_done then on_done(nil) end
+            return nil
+        end
+
+        local path = mp.get_property("path")
+        local media = resolve_media_info(path, video_name)
+        local content_type = media.content_type
+        if content_type ~= "anime" and content_type ~= "tv" and content_type ~= "movie" then
+            content_type = media.episode and "tv" or "movie"
+        end
+        local title = media.title or video_name or "unknown"
+
+        local tmp = "/tmp/subdl_extract_" .. os.time()
+        safe_mkdir(tmp)
+        local out = tmp .. "/" .. sanitize_filename(title) .. ".srt"
+        local f = io.open(out, "w")
+        if not f then safe_rm_rf(tmp); if on_done then on_done(nil) end; return nil end
+        f:write(body)
+        f:close()
+
+        local sub_file = process_download_content(tmp, title, content_type, season, episode, valid_episodes, valid_pairs, video_name, dl_url)
+        safe_rm_rf(tmp)
+        if sub_file then mp.commandv("sub-add", sub_file); mp.msg.info("SubDL: loaded subtitle", sub_file) end
+        if on_done then on_done(sub_file) end
+        return sub_file
     end
 
-    local path = mp.get_property("path")
-    local media = resolve_media_info(path, video_name)
-    local content_type = media.content_type
-    if content_type ~= "anime" and content_type ~= "tv" and content_type ~= "movie" then
-        content_type = media.episode and "tv" or "movie"
-    end
-    local title = media.title or video_name or "unknown"
-
-    local tmp = "/tmp/subdl_extract_" .. os.time()
-    safe_mkdir(tmp)
-    local out = tmp .. "/" .. sanitize_filename(title) .. ".srt"
-    local f = io.open(out, "w")
-    if not f then safe_rm_rf(tmp); return nil end
-    f:write(body)
-    f:close()
-
-    local sub_file = process_download_content(tmp, title, content_type, season, episode, valid_episodes, valid_pairs, video_name, dl_url)
-    safe_rm_rf(tmp)
-    if sub_file then mp.commandv("sub-add", sub_file); mp.msg.info("SubDL: loaded subtitle", sub_file) end
-    return sub_file
+    subdl_provider.download_async(sub, function(body, code, dl_url)
+        handle_download(body, code, dl_url)
+    end)
+    return nil
 end
 
-local function fetch_bulk_subs(subs_batch, video_name, season, episode, valid_episodes, valid_pairs)
+local function fetch_bulk_subs(subs_batch, video_name, season, episode, valid_episodes, valid_pairs, on_done)
     local path = mp.get_property("path")
     local media = resolve_media_info(path, video_name)
     local content_type = media.content_type
@@ -942,18 +1014,27 @@ local function fetch_bulk_subs(subs_batch, video_name, season, episode, valid_ep
     local tmp_base = "/tmp/subdl_batch_" .. os.time()
     safe_mkdir(tmp_base)
 
-    mp.msg.info(string.format("SubDL: downloading %d subtitles sequentially...", #subs_batch))
+    mp.msg.info(string.format("SubDL: downloading %d subtitles async...", #subs_batch))
 
-    for i, sub in ipairs(subs_batch) do
+    local function process_item(i)
+        if i > #subs_batch then
+            safe_rm_rf(tmp_base)
+            if on_done then on_done(nil) end
+            return
+        end
+
+        local sub = subs_batch[i]
         local sub_id = sub and (sub.nId or sub.id or sub.sd_id)
         if not sub_id then
             mp.msg.warn("subdl_ar: sub has no id, skipping batch item " .. i)
-        else
-            local extract_dir = string.format("%s/%d", tmp_base, i)
-            safe_mkdir(extract_dir)
+            mp.add_timeout(0, function() process_item(i + 1) end)
+            return
+        end
 
-            local body, code, dl_url = subdl_provider.download(sub)
+        subdl_provider.download_async(sub, function(body, code, dl_url)
             if body and body ~= "" and dl_url then
+                local extract_dir = string.format("%s/%d", tmp_base, i)
+                safe_mkdir(extract_dir)
                 local out = extract_dir .. "/" .. sanitize_filename(title) .. ".srt"
                 local f = io.open(out, "w")
                 if f then
@@ -965,17 +1046,19 @@ local function fetch_bulk_subs(subs_batch, video_name, season, episode, valid_ep
                         safe_rm_rf(tmp_base)
                         mp.commandv("sub-add", loaded)
                         mp.msg.info("SubDL: loaded subtitle", loaded)
-                        return loaded
+                        if on_done then on_done(loaded) end
+                        return
                     end
                 end
             else
                 mp.msg.warn("subdl_ar: empty download body for batch item " .. i
                             .. " http_code=" .. tostring(code))
             end
-        end
+            mp.add_timeout(0, function() process_item(i + 1) end)
+        end)
     end
 
-    safe_rm_rf(tmp_base)
+    process_item(1)
     return nil
 end
 
@@ -1009,9 +1092,13 @@ local function fetch_next_sub()
     if not subs_list then mp.osd_message("No Arabic subtitles found", 3); return end
 
     current_index[video_name] = current_index[video_name] or 0
-    local attempts = 0
 
-    while attempts < 5 do
+    local function try_batch(attempt)
+        if attempt > 5 then
+            mp.osd_message("Failed to load subtitles after several batches", 3)
+            return
+        end
+
         local start_idx = current_index[video_name] + 1
         if start_idx > #subs_list then
             mp.osd_message("No more subtitles available", 3)
@@ -1025,17 +1112,19 @@ local function fetch_next_sub()
         for i = start_idx, end_idx do table.insert(batch, subs_list[i]) end
         current_index[video_name] = end_idx
 
-        mp.osd_message(string.format("Downloading batch %d-%d/%d...", start_idx, end_idx, #subs_list), 2)
-        local loaded = fetch_bulk_subs(batch, video_name, season, episode, valid_episodes, valid_pairs)
-        if loaded then
-            mp.osd_message("Subtitle loaded", 2)
-            return
-        end
-
-        attempts = attempts + 1
-        mp.osd_message("Batch failed, trying next...", 1)
+        osd_show(string.format("Downloading batch %d-%d/%d...", start_idx, end_idx, #subs_list))
+        fetch_bulk_subs(batch, video_name, season, episode, valid_episodes, valid_pairs, function(loaded)
+            osd_remove()
+            if loaded then
+                mp.osd_message("Subtitle loaded", 2)
+                return
+            end
+            mp.osd_message("Batch failed, trying next...", 1)
+            mp.add_timeout(0.1, function() try_batch(attempt + 1) end)
+        end)
     end
-    mp.osd_message("Failed to load subtitles after several batches", 3)
+
+    try_batch(1)
 end
 
 local function has_arabic_sub()
@@ -1167,7 +1256,7 @@ local function enhanced_auto_fetch_if_needed()
     end
     
     if not has_arabic_sub() then
-        mp.osd_message("Searching for Arabic subtitles...", 2)
+        osd_show("Searching for Arabic subtitles...")
         fetch_next_sub()
     end
 end
@@ -1357,12 +1446,13 @@ local function handle_manual_search(query)
         valid_episodes, valid_pairs = build_valid_mapping_sets(cour_mappings)
     end
 
-    local loaded = download_and_load(sub, video_name, dl_season, dl_episode, valid_episodes, valid_pairs)
-    if loaded then
-        mp.osd_message("Loaded: " .. loaded:match("([^/]+)$"), 3)
-    else
-        mp.osd_message("Failed to load subtitle", 3)
-    end
+    download_and_load(sub, video_name, dl_season, dl_episode, valid_episodes, valid_pairs, function(loaded)
+        if loaded then
+            mp.osd_message("Loaded: " .. loaded:match("([^/]+)$"), 3)
+        else
+            mp.osd_message("Failed to load subtitle", 3)
+        end
+    end)
 end
 
 -- Load cache on startup
@@ -1373,6 +1463,7 @@ index_local_files()
 load_media_catalog()
 
 mp.register_event("file-loaded", enhanced_auto_fetch_if_needed)
+mp.register_event("end-file", abort_inflight)
 mp.register_event("shutdown", function() cache_mod.force_save() end)
 mp.add_key_binding("Ctrl+Shift+V", "subdl_ar_next", fetch_next_sub)
 mp.add_key_binding("Ctrl+V", "subdl_ar_toggle_deep", toggle_deep_search)
