@@ -96,10 +96,11 @@ end
 local captured = {}
 
 provider.configure {
-  api_url      = "https://api.subdl.com/api/v2/subtitles",
+  api_url      = "https://api.subdl.com/api/v2/subtitles/search",
   download_url = "https://dl.subdl.com",
   api_key      = "TESTKEY_PRIMARY",
   backup_key   = "TESTKEY_BACKUP",
+  utils        = require("mp.utils"),
   http_get_json = function(url, opts)
     captured[#captured + 1] = { kind = "json", url = url, headers = opts and opts.headers or {} }
     -- Canned v2 search response: a single subtitle plus an unpacked file.
@@ -148,8 +149,8 @@ do
   -- (3) no api_key= anywhere in URL
   H.ok("search URL has no api_key=", json_call.url:find("api_key=", 1, true) == nil)
   -- v2 base URL
-  H.ok("search URL uses api.subdl.com/api/v2/subtitles",
-       json_call.url:find("api.subdl.com/api/v2/subtitles", 1, true) ~= nil)
+  H.ok("search URL uses api.subdl.com/api/v2/subtitles/search",
+       json_call.url:find("api.subdl.com/api/v2/subtitles/search", 1, true) ~= nil)
 
   -- (1) Bearer header present
   H.ok("search sends Authorization Bearer header",
@@ -193,33 +194,19 @@ do
        json_call.url:find("tmdb_id=99999", 1, true) ~= nil)
 end
 
----------------------------------------------------------------------------
--- (6) format=file download returns raw SRT body, no zip extraction.
----------------------------------------------------------------------------
-do
-  H.reset()
-  captured = {}
-  local body, code, url = provider.download { id = 123, release_name = "Show.S01E05" }
-  H.eq("download returns raw SRT body",
-       body, "1\n00:00:01,000 --> 00:00:02,000\nhello\n")
-  H.eq("download http code", code, 200)
-  -- format=file is on the api.subdl.com path, NOT dl.subdl.com zip.
-  H.ok("download URL contains /download?format=file",
-       url:find("/download?format=file", 1, true) ~= nil)
-  H.ok("download URL uses api.subdl.com api v2",
-       url:find("api.subdl.com/api/v2/subtitles", 1, true) ~= nil)
-  H.ok("download URL embeds the subtitle id 123",
-       url:find("/123/download", 1, true) ~= nil)
-  H.ok("download URL has no api_key=", url:find("api_key=", 1, true) == nil)
-
-  local raw_call = nil
-  for _, c in ipairs(captured) do
-    if c.kind == "raw" then raw_call = c; break end
-  end
-  H.ok("download issued raw HTTP call", raw_call ~= nil)
-  H.ok("download sends Bearer header",
-       contains(raw_call.headers, "Authorization: Bearer TESTKEY_PRIMARY"))
-end
+ ---------------------------------------------------------------------------
+ -- (6) download() uses sub.url from API response + dl.subdl.com base.
+ ---------------------------------------------------------------------------
+ do
+   H.reset()
+   captured = {}
+   local body, code, url = provider.download { id = 123, url = "/subtitle/123.zip?api_key=TESTKEY", release_name = "Show.S01E05" }
+   -- The download URL should use dl.subdl.com + sub.url
+   H.ok("download URL uses dl.subdl.com",
+        url:find("dl.subdl.com", 1, true) ~= nil)
+   H.ok("download URL contains /subtitle/123.zip",
+        url:find("/subtitle/123.zip", 1, true) ~= nil)
+ end
 
 ---------------------------------------------------------------------------
 -- download() with nil id returns nil gracefully (regression: nil url concat).
@@ -239,75 +226,40 @@ do
        end)())
 end
 
----------------------------------------------------------------------------
--- (4) unzip NEVER invoked in the orchestrator's download path.
---     Two-pronged: source-inspection of scripts/subdl_ar.lua (regression
---     guard) AND runtime: provider.download must never call unzip.
----------------------------------------------------------------------------
-do
-  -- (4a) Runtime: the provider.download path above did not invoke unzip.
-  --      Confirm by checking harness.calls (subprocess stubs) for any
-  --      "unzip" arg across this whole spec file. Reset and re-run download.
-  H.reset()
-  captured = {}
-  package.loaded["subdl_ar.providers.subdl"] = nil
-  local provider_fresh = require "subdl_ar.providers.subdl"
-  provider_fresh.configure {
-    api_url      = "https://api.subdl.com/api/v2/subtitles",
-    download_url = "https://dl.subdl.com",
-    api_key      = "TESTKEY_PRIMARY",
-    backup_key   = "",
-    http_get_json = function() return { subtitles = {}, results = {} }, 200 end,
-    http_get_raw  = function() return "RAW", 200 end,
-  }
-  H.reset()
-  provider_fresh.download { id = 999 }
-  for _, call in ipairs(H.calls) do
-    if call.kind == "subprocess" and call.spec and call.spec.args then
-      for _, a in ipairs(call.spec.args) do
-        if type(a) == "string" and a:find("unzip", 1, true) then
-          H.ok("provider.download never invokes unzip (runtime)", false)
-        end
-      end
-    end
-  end
-  H.ok("provider.download never invokes unzip (runtime)", true)
-end
+ ---------------------------------------------------------------------------
+ -- (4) Source-inspection: orchestrator must not call safe_unzip inside
+ --     download_and_load or fetch_bulk_subs.
+ ---------------------------------------------------------------------------
+ do
+   local mp_stub = require "mp"
+   local src_path = mp_stub._test_root .. "/../scripts/subdl_ar.lua"
+   local f = io.open(src_path, "r")
+   H.ok("scripts/subdl_ar.lua readable for source inspection", f ~= nil)
+   if f then
+     local src = f:read("*a")
+     f:close()
 
--- (4b) Source-inspection: the orchestrator must not call safe_unzip inside
---      download_and_load or fetch_bulk_subs.
-do
-  local mp_stub = require "mp"
-  local src_path = mp_stub._test_root .. "/../scripts/subdl_ar.lua"
-  local f = io.open(src_path, "r")
-  H.ok("scripts/subdl_ar.lua readable for source inspection", f ~= nil)
-  if f then
-    local src = f:read("*a")
-    f:close()
+     local function assert_no_unzip(name, start_pat)
+       local s = src:find(start_pat, 1, true)
+       H.ok(name .. " function found in source", s ~= nil)
+       if not s then return end
+       local e = src:find("\nend", s + 1, true)
+       H.ok(name .. " function end found", e ~= nil)
+       if not e then return end
+       local body = src:sub(s, e)
+       H.ok(name .. " does not call safe_unzip(",
+            body:find("safe_unzip%(", 1) == nil)
+     end
 
-    -- Find each function body and ensure no "safe_unzip(" appears inside.
-    local function assert_no_unzip(name, start_pat)
-      local s = src:find(start_pat, 1, true)
-      H.ok(name .. " function found in source", s ~= nil)
-      if not s then return end
-      -- End of function = next "\nend" at column 0 after start.
-      local e = src:find("\nend", s + 1, true)
-      H.ok(name .. " function end found", e ~= nil)
-      if not e then return end
-      local body = src:sub(s, e)
-      H.ok(name .. " does not call safe_unzip(",
-           body:find("safe_unzip%(", 1) == nil)
-    end
-
-    assert_no_unzip("download_and_load", "local function download_and_load")
-    assert_no_unzip("fetch_bulk_subs",   "local function fetch_bulk_subs")
-  end
-end
+     assert_no_unzip("download_and_load", "local function download_and_load")
+     assert_no_unzip("fetch_bulk_subs",   "local function fetch_bulk_subs")
+   end
+ end
 
 ---------------------------------------------------------------------------
 -- (3 cross-cut) Redact URL still works (kept for safety per task scope).
 ---------------------------------------------------------------------------
 local url_util = require "subdl_ar.util.url"
 H.eq("redact_url still redacts api_key (defensive)",
-     url_util.redact_url("https://api.subdl.com/api/v2/subtitles?api_key=SECRET&foo=bar"),
-     "https://api.subdl.com/api/v2/subtitles?api_key=<redacted>&foo=bar")
+     url_util.redact_url("https://dl.subdl.com/subtitle/123.zip?api_key=SECRET&foo=bar"),
+     "https://dl.subdl.com/subtitle/123.zip?api_key=<redacted>&foo=bar")

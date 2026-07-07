@@ -63,7 +63,7 @@ local SUBDL_API_KEY = trim(config.subdl_api_key) ~= "" and config.subdl_api_key 
 local SUBDL_API_BACKUP_KEY = trim(config.subdl_api_backup_key) ~= "" and config.subdl_api_backup_key or env_config.subdl_api_backup_key
 local TMDB_API_KEY = trim(config.tmdb_api_key) ~= "" and config.tmdb_api_key or env_config.tmdb_api_key
 -- FIX 1: Remove trailing spaces from API URLs
-local SUBDL_API_URL = "https://api.subdl.com/api/v2/subtitles"
+local SUBDL_API_URL = "https://api.subdl.com/api/v2/subtitles/search"
 local TMDB_API_URL = "https://api.themoviedb.org/3"
 local CURL_TIMEOUT = 10
 local MAX_RETRIES = 2
@@ -1139,9 +1139,8 @@ end
 local function download_and_load(sub, video_name, season, episode, valid_episodes, valid_pairs, on_done)
     downloaded_subs[video_name] = downloaded_subs[video_name] or {}
 
-    local sub_id = sub and (sub.nId or sub.id or sub.sd_id)
-    local cache_key = sub_id and subdl_provider.api_download_url(sub_id)
-                       or sub.url or sub.download_url
+    local cache_key = subdl_provider.api_download_url(sub)
+                       or (sub and (sub.url or sub.download_url))
     if cache_key and downloaded_subs[video_name][cache_key] then
         mp.osd_message("Subtitle loaded", 2)
         mp.commandv("sub-add", downloaded_subs[video_name][cache_key])
@@ -1151,7 +1150,7 @@ local function download_and_load(sub, video_name, season, episode, valid_episode
 
     local function handle_download(body, code, dl_url)
         if not body or body == "" or not dl_url then
-            mp.msg.warn("subdl_ar: empty download body for sub id=" .. tostring(sub_id)
+            mp.msg.warn("subdl_ar: empty download body for url=" .. tostring(dl_url)
                         .. " http_code=" .. tostring(code))
             if on_done then on_done(nil) end
             return nil
@@ -1212,9 +1211,8 @@ local function fetch_bulk_subs(subs_batch, video_name, season, episode, valid_ep
         end
 
         local sub = subs_batch[i]
-        local sub_id = sub and (sub.nId or sub.id or sub.sd_id)
-        if not sub_id then
-            mp.msg.warn("subdl_ar: sub has no id, skipping batch item " .. i)
+        if not sub or type(sub) ~= "table" then
+            mp.msg.warn("subdl_ar: invalid sub, skipping batch item " .. i)
             mp.add_timeout(0, function() process_item(i + 1) end)
             return
         end

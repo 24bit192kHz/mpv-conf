@@ -35,7 +35,7 @@ local M = {}
 
 -- Default configuration. configure() merges caller-supplied keys over these.
 M._cfg = {
-  api_url      = "https://api.subdl.com/api/v2/subtitles",
+  api_url      = "https://api.subdl.com/api/v2/subtitles/search",
   download_url = "https://dl.subdl.com",
   api_key      = "",
   backup_key   = "",
@@ -59,6 +59,12 @@ local function log(level, msg)
   end
 end
 
+local function get_utils()
+  if M._utils then return M._utils end
+  if _mp and _mp.utils then return _mp.utils end
+  return nil
+end
+
 -- configure({ api_key=, http_get_json=, ... }): merge caller deps.
 -- Idempotent: subsequent calls overlay on top of the previous state.
 function M.configure(deps)
@@ -68,6 +74,8 @@ function M.configure(deps)
     elseif k == "http_get_raw" then M._http.get_raw = v
     elseif k == "http_get_json_async" then M._http.get_json_async = v
     elseif k == "http_get_raw_async" then M._http.get_raw_async = v
+    elseif k == "utils" then M._utils = v
+    elseif k == "mp" then _mp = v; _utils = v and v.utils or nil
     else M._cfg[k] = v end
   end
 end
@@ -153,29 +161,84 @@ function M.get_sd_id(media_type, tmdb_id, title)
   return nil
 end
 
--- api_download_url(sub_id) -> url string
--- v2 format=file endpoint. Response body is raw SRT (no zip).
-function M.api_download_url(sub_id)
-  return string.format("%s/%s/download?format=file",
-                       M._cfg.api_url, sub_id)
+-- api_download_url(sub) -> url string
+-- Uses sub.url from the API response (relative path on dl.subdl.com).
+-- Falls back to sub_id-based construction if sub.url is unavailable.
+function M.api_download_url(sub)
+  if type(sub) ~= "table" then
+    return nil
+  end
+  -- Prefer the URL from the API response (relative path like /subtitle/...).
+  local sub_url = sub.url or sub.download_url
+  if sub_url and sub_url ~= "" then
+    -- If already absolute, return as-is; otherwise prepend download_url base.
+    if sub_url:match("^https?://") then
+      return sub_url
+    end
+    return M._cfg.download_url .. sub_url
+  end
+  -- Fallback: construct from sub_id (legacy path, may not work with v2).
+  local sub_id = sub.nId or sub.id or sub.sd_id
+  if sub_id then
+    return M._cfg.download_url .. "/subtitle/" .. tostring(sub_id) .. ".zip"
+  end
+  return nil
 end
 
--- download(sub) -> body, http_code, url
--- Fetches the raw SRT body via format=file. Caller writes body to disk.
--- Returns (nil, 0, nil) if sub lacks an id (regression guard for the
--- nil-concatenation crash fixed in Task A).
 function M.download(sub)
   if type(sub) ~= "table" then return nil, 0, nil end
 
-  local sub_id = sub.nId or sub.id or sub.sd_id
-  if not sub_id then return nil, 0, nil end
+  local url = M.api_download_url(sub)
+  if not url then return nil, 0, nil end
 
-  local url = M.api_download_url(sub_id)
-  local headers = auth_headers()
-  table.insert(headers, "Accept: text/plain, application/octet-stream")
+  local tmp_zip = "/tmp/subdl_dl_" .. os.time() .. "_" .. math.random(10000) .. ".zip"
+  local tmp_dir = "/tmp/subdl_dl_" .. os.time() .. "_" .. math.random(10000)
 
-  local body, code = M._http.get_raw(url, { headers = headers })
-  return body, code, url
+  local res = get_utils().subprocess({
+    args = {
+      "curl", "-sS", "-o", tmp_zip, "-w", "%{http_code}",
+      "--connect-timeout", "10", "--max-time", "20",
+      url,
+    },
+    cancellable = false,
+  })
+
+  local code = tonumber(res.stdout) or 0
+  local zip_info = get_utils().file_info(tmp_zip)
+  if code < 200 or code >= 300 or not zip_info or zip_info.size == 0 then
+    os.remove(tmp_zip)
+    return nil, code, url
+  end
+
+  get_utils().subprocess({
+    args = {"mkdir", "-p", tmp_dir},
+    cancellable = false,
+  })
+  get_utils().subprocess({
+    args = {"unzip", "-o", tmp_zip, "-d", tmp_dir},
+    cancellable = false,
+  })
+
+  local srt_content = nil
+  local find_res = get_utils().subprocess({
+    args = {"find", tmp_dir, "-type", "f", "-name", "*.srt", "-o", "-name", "*.ass", "-o", "-name", "*.ssa"},
+    cancellable = false,
+  })
+  if find_res.status == 0 and find_res.stdout and find_res.stdout ~= "" then
+    local first_path = find_res.stdout:match("^([^\n]+)")
+    if first_path then
+      local f = io.open(first_path, "r")
+      if f then
+        srt_content = f:read("*a")
+        f:close()
+      end
+    end
+  end
+
+  os.remove(tmp_zip)
+  get_utils().subprocess({ args = {"rm", "-rf", tmp_dir}, cancellable = false })
+
+  return srt_content, code, url
 end
 
 function M.search_async(query_string, opts, on_done)
@@ -223,33 +286,70 @@ function M.search_async(query_string, opts, on_done)
 end
 
 function M.download_async(sub, on_done)
-  if not M._http.get_raw_async then
-    local body, code, url = M.download(sub)
-    if on_done then on_done(body, code, url) end
-    return nil
-  end
   if type(sub) ~= "table" then
     if on_done then on_done(nil, 0, nil) end
     return nil
   end
-  local sub_id = sub.nId or sub.id or sub.sd_id
-  if not sub_id then
+
+  local url = M.api_download_url(sub)
+  if not url then
     if on_done then on_done(nil, 0, nil) end
     return nil
   end
-  local url = M.api_download_url(sub_id)
-  local headers = auth_headers()
-  table.insert(headers, "Accept: text/plain, application/octet-stream")
-  return M._http.get_raw_async(url, {
-    headers = headers,
-    api_key = M._cfg.api_key,
-    backup_key = M._cfg.backup_key,
-    osd_label = "Downloading...",
-  }, function(success, result)
-    if on_done then
-      on_done(result.body or result.stdout, result.http_code or 0, url)
-    end
-  end)
+
+  local tmp_zip = "/tmp/subdl_dl_" .. os.time() .. "_" .. math.random(10000) .. ".zip"
+  local tmp_dir = "/tmp/subdl_dl_" .. os.time() .. "_" .. math.random(10000)
+
+  local curl_args = {
+    "curl", "-sS", "-o", tmp_zip, "-w", "%{http_code}",
+    "--connect-timeout", "10", "--max-time", "20",
+    url,
+  }
+
+  if mp.command_native_async then
+    return mp.command_native_async({
+      name = "subprocess",
+      args = curl_args,
+      capture_stdout = true,
+      playback_only = false,
+    }, function(res)
+      local code = tonumber(res.stdout) or 0
+      local zip_info = get_utils().file_info(tmp_zip)
+      if code < 200 or code >= 300 or not zip_info or zip_info.size == 0 then
+        os.remove(tmp_zip)
+        if on_done then on_done(nil, code, url) end
+        return
+      end
+
+      get_utils().subprocess({ args = {"mkdir", "-p", tmp_dir}, cancellable = false })
+      get_utils().subprocess({ args = {"unzip", "-o", tmp_zip, "-d", tmp_dir}, cancellable = false })
+
+      local srt_content = nil
+      local find_res = get_utils().subprocess({
+        args = {"find", tmp_dir, "-type", "f", "-name", "*.srt", "-o", "-name", "*.ass", "-o", "-name", "*.ssa"},
+        cancellable = false,
+      })
+      if find_res.status == 0 and find_res.stdout and find_res.stdout ~= "" then
+        local first_path = find_res.stdout:match("^([^\n]+)")
+        if first_path then
+          local f = io.open(first_path, "r")
+          if f then
+            srt_content = f:read("*a")
+            f:close()
+          end
+        end
+      end
+
+      os.remove(tmp_zip)
+      get_utils().subprocess({ args = {"rm", "-rf", tmp_dir}, cancellable = false })
+
+      if on_done then on_done(srt_content, code, url) end
+    end)
+  end
+
+  local body, code, dl_url = M.download(sub)
+  if on_done then on_done(body, code, dl_url) end
+  return nil
 end
 
 return M
