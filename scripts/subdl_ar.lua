@@ -16,6 +16,8 @@ local media_util = require 'subdl_ar.util.media'
 local match_util = require 'subdl_ar.util.match'
 local config_loader = require 'subdl_ar.config'
 local subdl_provider = require 'subdl_ar.providers.subdl'
+local opensubs_provider = require 'subdl_ar.providers.opensubtitles'
+local oshash_mod = require 'subdl_ar.oshash'
 local cache_mod = require 'subdl_ar.cache'
 local http_mod = require 'subdl_ar.http'
 
@@ -65,6 +67,8 @@ local TMDB_API_URL = "https://api.themoviedb.org/3"
 local CURL_TIMEOUT = 10
 local MAX_RETRIES = 2
 local DEEP_SEARCH = (os.getenv("SUBDL_DEEP_SEARCH") == "1")
+local OPENSUBS_API_KEY = _cfg.opensubs_api_key or ""
+local OPENSUBS_APP_NAME = _cfg.opensubs_app_name or "subdl_ar v1"
 
 -- Magic number constants
 local EARLY_STOP_COUNT = 5
@@ -272,6 +276,37 @@ subdl_provider.configure {
     http_get_raw = http_get_raw,
     http_get_json_async = http_get_json_async,
     http_get_raw_async = http_get_raw_async,
+}
+
+opensubs_provider.configure {
+    api_key = OPENSUBS_API_KEY,
+    app_name = OPENSUBS_APP_NAME,
+    http_get_json_async = function(url, opts, on_done)
+        local headers = opts and opts.headers or {}
+        local handle = http_mod.request_async(url, {
+            api_key = OPENSUBS_API_KEY,
+            headers = headers,
+            timeout = opts and opts.timeout,
+        }, function(success, result)
+            if not success or not result.body then
+                if on_done then on_done(false, nil, 0) end
+                return
+            end
+            local json = utils.parse_json(result.body)
+            if on_done then on_done(json ~= nil, json, result.http_code or 0) end
+        end)
+        return handle
+    end,
+    http_get_raw_async = function(url, opts, on_done)
+        local handle = http_mod.request_async(url, {
+            api_key = OPENSUBS_API_KEY,
+            headers = opts and opts.headers or {},
+            timeout = opts and opts.timeout,
+        }, function(success, result)
+            if on_done then on_done(success, { body = result.body, http_code = result.http_code or 0 }) end
+        end)
+        return handle
+    end,
 }
 
 -- Safe subprocess helpers (avoid shell injection from os.execute)
@@ -1089,7 +1124,50 @@ local function fetch_next_sub()
     end
     
     local subs_list = fetch_sub_list(video_name)
-    if not subs_list then mp.osd_message("No Arabic subtitles found", 3); return end
+    if not subs_list then
+        if OPENSUBS_API_KEY ~= "" then
+            local file_info = utils.file_info(path)
+            local file_size = file_info and file_info.size or 0
+            if file_size >= 131072 then
+                local hash = oshash_mod.compute_file(path)
+                if hash then
+                    mp.msg.info("OpenSubtitles: trying hash fallback for " .. hash)
+                    osd_show("Trying OpenSubtitles fallback...")
+                    opensubs_provider.search_by_hash(hash, file_size, function(results)
+                        osd_remove()
+                        if not results or #results == 0 then
+                            mp.osd_message("No Arabic subtitles found", 3)
+                            return
+                        end
+                        mp.msg.info(string.format("OpenSubtitles: found %d file(s), downloading first", #results))
+                        osd_show("Downloading from OpenSubtitles...")
+                        opensubs_provider.download_file(results[1].file_id, function(body, code)
+                            osd_remove()
+                            if not body or body == "" then
+                                mp.osd_message("OpenSubtitles download failed", 3)
+                                return
+                            end
+                            local tmp = "/tmp/opensubs_" .. os.time() .. ".srt"
+                            local f = io.open(tmp, "w")
+                            if not f then mp.osd_message("Failed to save subtitle", 3); return end
+                            f:write(body)
+                            f:close()
+                            local sub_file = process_download_content(tmp, media.title or video_name, media.content_type or "movie", season, episode, valid_episodes, valid_pairs, video_name, "opensubtitles:" .. results[1].file_id)
+                            os.remove(tmp)
+                            if sub_file then
+                                mp.commandv("sub-add", sub_file)
+                                mp.osd_message("Subtitle loaded (OpenSubtitles)", 2)
+                            else
+                                mp.osd_message("Failed to process subtitle", 3)
+                            end
+                        end)
+                    end)
+                    return
+                end
+            end
+        end
+        mp.osd_message("No Arabic subtitles found", 3); return
+    end
 
     current_index[video_name] = current_index[video_name] or 0
 
