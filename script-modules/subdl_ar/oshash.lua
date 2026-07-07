@@ -4,108 +4,80 @@
 -- Used for hash-based subtitle matching via the OpenSubtitles REST API.
 --
 -- Algorithm:
---   1. Read 64 chunks of 8 bytes from the first 64KB (head).
---   2. Read 64 chunks of 8 bytes from the last 64KB (tail).
---   3. XOR-fold each set of 64 uint64 values into a single uint64.
---   4. Hash = head_hash XOR tail_hash XOR file_size.
+--   1. Read 64KB (65536 bytes) from the start of the file.
+--   2. Read 64KB (65536 bytes) from the end of the file.
+--   3. Sum all 64-bit unsigned integers (little-endian), plus the file size.
 --
 -- Files smaller than 128KB cannot produce a valid hash (head and tail
 -- would overlap entirely). Returns nil for such files.
 
 local M = {}
 
-local CHUNK_SIZE = 8
-local NUM_CHUNKS = 64
-local HALF_SIZE = NUM_CHUNKS * CHUNK_SIZE  -- 512 bytes
-local MIN_FILE_SIZE = HALF_SIZE * 2        -- 1024 bytes minimum for non-overlapping head+tail
+local CHUNK_SIZE = 65536
+local MIN_FILE_SIZE = CHUNK_SIZE * 2
 
--- Read exactly `n` bytes from file handle `f` at absolute position `pos`.
--- Returns the bytes string, or nil on short/failed read.
-local function read_at(f, pos, n)
-  f:seek("set", pos)
-  return f:read(n)
+local function add64(lo1, hi1, lo2, hi2)
+    local lo = lo1 + lo2
+    local hi = hi1 + hi2
+    if lo >= 4294967296 then
+        lo = lo - 4294967296
+        hi = hi + 1
+    end
+    if hi >= 4294967296 then
+        hi = hi - 4294967296
+    end
+    return lo, hi
 end
 
--- XOR-fold a byte string into a single uint64.
--- Processes 8 bytes at a time. For each chunk, interpret as a big-endian
--- unsigned 64-bit integer and XOR it into the accumulator.
-local function xor_fold(bytes)
-  local acc = 0
-  for i = 1, #bytes - CHUNK_SIZE + 1, CHUNK_SIZE do
-    local a = string.byte(bytes, i)
-    local b = string.byte(bytes, i + 1)
-    local c = string.byte(bytes, i + 2)
-    local d = string.byte(bytes, i + 3)
-    local e = string.byte(bytes, i + 4)
-    local f = string.byte(bytes, i + 5)
-    local g = string.byte(bytes, i + 6)
-    local h = string.byte(bytes, i + 7)
-    local chunk = a * 0x100000000000000
-                 + b * 0x1000000000000
-                 + c * 0x10000000000
-                 + d * 0x100000000
-                 + e * 0x1000000
-                 + f * 0x10000
-                 + g * 0x100
-                 + h
-    acc = acc ~ chunk
-  end
-  return acc
+local function compute_hash_core(data, file_size)
+    local lo_acc = file_size % 4294967296
+    local hi_acc = math.floor(file_size / 4294967296)
+
+    for i = 1, #data - 7, 8 do
+        local b1, b2, b3, b4, b5, b6, b7, b8 = string.byte(data, i, i + 7)
+        local lo = b1 + b2 * 256 + b3 * 65536 + b4 * 16777216
+        local hi = b5 + b6 * 256 + b7 * 65536 + b8 * 16777216
+        lo_acc, hi_acc = add64(lo_acc, hi_acc, lo, hi)
+    end
+    return string.format("%08x%08x", hi_acc, lo_acc)
 end
 
--- Compute OSHash from a raw byte string.
--- Returns 16-char lowercase hex string, or nil if data is too short.
 function M.compute_string(data)
-  if type(data) ~= "string" or #data < MIN_FILE_SIZE then
-    return nil
-  end
+    if type(data) ~= "string" then return nil end
+    local file_size = #data
+    if file_size < MIN_FILE_SIZE then
+        return nil
+    end
 
-  local file_size = #data
+    local head = data:sub(1, CHUNK_SIZE)
+    local tail = data:sub(file_size - CHUNK_SIZE + 1)
 
-  -- Head: first 512 bytes
-  local head = data:sub(1, HALF_SIZE)
-  -- Tail: last 512 bytes
-  local tail = data:sub(file_size - HALF_SIZE + 1)
-
-  local h = xor_fold(head) ~ xor_fold(tail) ~ file_size
-
-  return string.format("%016x", h & 0xFFFFFFFFFFFFFFFF)
+    return compute_hash_core(head .. tail, file_size)
 end
 
--- Compute OSHash from a file path.
--- Returns 16-char lowercase hex string, or nil on error / too small.
 function M.compute_file(path)
-  if not path or path == "" then return nil end
+    if not path or path == "" then return nil end
 
-  local f = io.open(path, "rb")
-  if not f then return nil end
+    local f = io.open(path, "rb")
+    if not f then return nil end
 
-  local file_size = f:seek("end")
-  if not file_size or file_size < MIN_FILE_SIZE then
+    local file_size = f:seek("end")
+    if not file_size or file_size < MIN_FILE_SIZE then
+        f:close()
+        return nil
+    end
+
+    f:seek("set", 0)
+    local head = f:read(CHUNK_SIZE)
+    f:seek("set", file_size - CHUNK_SIZE)
+    local tail = f:read(CHUNK_SIZE)
     f:close()
-    return nil
-  end
 
-  -- Head: first 512 bytes
-  local head = read_at(f, 0, HALF_SIZE)
-  if not head or #head < HALF_SIZE then
-    f:close()
-    return nil
-  end
+    if not head or #head < CHUNK_SIZE or not tail or #tail < CHUNK_SIZE then
+        return nil
+    end
 
-  -- Tail: last 512 bytes
-  local tail_pos = file_size - HALF_SIZE
-  local tail = read_at(f, tail_pos, HALF_SIZE)
-  if not tail or #tail < HALF_SIZE then
-    f:close()
-    return nil
-  end
-
-  f:close()
-
-  local h = xor_fold(head) ~ xor_fold(tail) ~ file_size
-
-  return string.format("%016x", h & 0xFFFFFFFFFFFFFFFF)
+    return compute_hash_core(head .. tail, file_size)
 end
 
 return M
