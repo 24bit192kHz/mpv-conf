@@ -17,6 +17,7 @@ local match_util = require 'subdl_ar.util.match'
 local config_loader = require 'subdl_ar.config'
 local subdl_provider = require 'subdl_ar.providers.subdl'
 local opensubs_provider = require 'subdl_ar.providers.opensubtitles'
+local tvdb_provider = require 'subdl_ar.providers.tvdb'
 local oshash_mod = require 'subdl_ar.oshash'
 local cache_mod = require 'subdl_ar.cache'
 local http_mod = require 'subdl_ar.http'
@@ -69,6 +70,8 @@ local MAX_RETRIES = 2
 local DEEP_SEARCH = (os.getenv("SUBDL_DEEP_SEARCH") == "1")
 local OPENSUBS_API_KEY = _cfg.opensubs_api_key or ""
 local OPENSUBS_APP_NAME = _cfg.opensubs_app_name or "subdl_ar v1"
+local TVDB_API_KEY = _cfg.tvdb_api_key or ""
+local USE_TVDB_COUR = _cfg.use_tvdb_cour or false
 
 -- Magic number constants
 local EARLY_STOP_COUNT = 5
@@ -110,6 +113,7 @@ local movie_files_map = {}
 local tmdb_cache = {}
 local tmdb_season_cache = {}
 local subdl_sd_cache = {}  -- Cache sd_id lookups
+local tvdb_series_cache = {}  -- TVDB title -> series_id cache
 local media_catalog = {
     loaded = false,
     exact_type = {},
@@ -308,6 +312,64 @@ opensubs_provider.configure {
         return handle
     end,
 }
+
+if TVDB_API_KEY ~= "" then
+    tvdb_provider.configure {
+        api_key = TVDB_API_KEY,
+        post_json_async = function(url, opts, on_done)
+            local body = opts and opts.body or ""
+            local extra_headers = opts and opts.headers or {}
+            local args = {
+                "curl", "-sS", "-D", "-",
+                "--connect-timeout", tostring(CURL_TIMEOUT),
+                "--max-time", tostring(CURL_TIMEOUT * 2),
+                "-X", "POST",
+                "-H", "Content-Type: application/json",
+                "-d", body,
+            }
+            for _, h in ipairs(extra_headers) do
+                if not h:find("Content-Type", 1, true) then
+                    table.insert(args, "-H")
+                    table.insert(args, h)
+                end
+            end
+            table.insert(args, url)
+            local handle = mp.command_native_async({
+                name = "subprocess",
+                args = args,
+                capture_stdout = true,
+                playback_only = false,
+            }, function(res)
+                local resp_body, http_code, _headers = nil, 0, {}
+                if res.stdout then
+                    local body_raw, code = res.stdout:match("^([%s%S]*)\n(%d%d%d)%s*$")
+                    resp_body = body_raw
+                    http_code = tonumber(code or 0)
+                end
+                local json = resp_body and utils.parse_json(resp_body) or nil
+                if on_done then on_done(json ~= nil, json, http_code) end
+            end)
+            return handle
+        end,
+        get_json_async = function(url, opts, on_done)
+            local headers = opts and opts.headers or {}
+            local handle = http_mod.request_async(url, {
+                api_key = TVDB_API_KEY,
+                headers = headers,
+                timeout = opts and opts.timeout,
+            }, function(success, result)
+                if not success or not result.body then
+                    if on_done then on_done(false, nil, 0) end
+                    return
+                end
+                local json = utils.parse_json(result.body)
+                if on_done then on_done(json ~= nil, json, result.http_code or 0) end
+            end)
+            return handle
+        end,
+    }
+    mp.msg.info("SubDL: TVDB provider configured")
+end
 
 -- Safe subprocess helpers (avoid shell injection from os.execute)
 local function safe_mkdir(path)
@@ -519,6 +581,105 @@ local function get_subdl_sd_id(media_type, tmdb_id, title)
     return sd_id
 end
 
+local function tvdb_resolve_episode_sync(title, absolute_episode)
+    if TVDB_API_KEY == "" or not USE_TVDB_COUR then return nil end
+
+    local cache_key = title:lower() .. ":" .. tostring(absolute_episode)
+    if tvdb_series_cache[cache_key] then
+        mp.msg.info("TVDB: using cached resolution for " .. title .. " ep " .. absolute_episode)
+        return tvdb_series_cache[cache_key]
+    end
+
+    mp.msg.info("TVDB: resolving absolute " .. absolute_episode .. " for " .. title)
+
+    local login_body = string.format('{"apikey":"%s"}', TVDB_API_KEY)
+    local login_cmd = {
+        "curl", "-sS", "-X", "POST",
+        "-H", "Content-Type: application/json",
+        "-d", login_body,
+        "--connect-timeout", tostring(CURL_TIMEOUT),
+        "--max-time", tostring(CURL_TIMEOUT * 2),
+        "-w", "\n%{http_code}",
+        "https://api4.thetvdb.com/v4/login",
+    }
+    local login_res = run(login_cmd)
+    if login_res.status ~= 0 or not login_res.stdout then
+        mp.msg.warn("TVDB: login request failed")
+        return nil
+    end
+    local login_body_raw, login_code = login_res.stdout:match("^([%s%S]*)\n(%d%d%d)%s*$")
+    local login_json = login_body_raw and utils.parse_json(login_body_raw) or nil
+    if not login_json or not login_json.data or not login_json.data.token then
+        mp.msg.warn("TVDB: login failed (http=" .. tostring(login_code) .. ")")
+        return nil
+    end
+    local jwt = login_json.data.token
+
+    local encoded_query = title:gsub(" ", "+")
+    local search_url = string.format("https://api4.thetvdb.com/v4/search?query=%s&type=series", encoded_query)
+    local search_cmd = {
+        "curl", "-sS",
+        "-H", "Authorization: Bearer " .. jwt,
+        "--connect-timeout", tostring(CURL_TIMEOUT),
+        "--max-time", tostring(CURL_TIMEOUT * 2),
+        "-w", "\n%{http_code}",
+        search_url,
+    }
+    local search_res = run(search_cmd)
+    if search_res.status ~= 0 or not search_res.stdout then
+        mp.msg.warn("TVDB: search request failed")
+        return nil
+    end
+    local search_body_raw, search_code = search_res.stdout:match("^([%s%S]*)\n(%d%d%d)%s*$")
+    local search_json = search_body_raw and utils.parse_json(search_body_raw) or nil
+    if not search_json or not search_json.data or #search_json.data == 0 then
+        mp.msg.warn("TVDB: no series found for '" .. title .. "'")
+        return nil
+    end
+    local series_id = search_json.data[1].id
+
+    local page = 0
+    while true do
+        local ep_url = string.format("https://api4.thetvdb.com/v4/series/%d/episodes/default?page=%d",
+                                     series_id, page)
+        local ep_cmd = {
+            "curl", "-sS",
+            "-H", "Authorization: Bearer " .. jwt,
+            "--connect-timeout", tostring(CURL_TIMEOUT),
+            "--max-time", tostring(CURL_TIMEOUT * 2),
+            "-w", "\n%{http_code}",
+            ep_url,
+        }
+        local ep_res = run(ep_cmd)
+        if ep_res.status ~= 0 or not ep_res.stdout then break end
+        local ep_body_raw = ep_res.stdout:match("^([%s%S]*)\n%d%d%d%s*$")
+        local ep_json = ep_body_raw and utils.parse_json(ep_body_raw) or nil
+        if not ep_json or not ep_json.data then break end
+
+        local episodes = ep_json.data.episodes or {}
+        for _, ep in ipairs(episodes) do
+            if ep.absoluteNumber and tonumber(ep.absoluteNumber) == absolute_episode then
+                local result = {
+                    season  = tonumber(ep.seasonNumber),
+                    episode = tonumber(ep.number),
+                }
+                tvdb_series_cache[cache_key] = result
+                cache_mod.schedule_save()
+                mp.msg.info(string.format("TVDB: resolved E%d -> S%dE%d for %s",
+                             absolute_episode, result.season, result.episode, title))
+                return result
+            end
+        end
+
+        local links = ep_json.data.links or {}
+        if not links.next then break end
+        page = page + 1
+    end
+
+    mp.msg.warn("TVDB: could not resolve absolute " .. absolute_episode .. " for " .. title)
+    return nil
+end
+
 
 -- Unified search execution helper
 local function execute_search_strategies(strategies, callbacks)
@@ -656,8 +817,17 @@ local function fetch_sub_list_movie(title, year, tmdb_id)
     return subs
 end
 
-local function fetch_sub_list_anime(title, season, episode, tmdb_id)
-    local cour_mappings = calculate_cour_mappings(episode, tmdb_id, season)
+local function fetch_sub_list_anime(title, season, episode, tmdb_id, opts)
+    opts = opts or {}
+    local cour_mappings
+
+    if opts.tvdb_result then
+        local tr = opts.tvdb_result
+        cour_mappings = { { season = tr.season, ep = tr.episode } }
+        mp.msg.info(string.format("TVDB: using resolved mapping S%dE%d for E%d", tr.season, tr.episode, episode))
+    else
+        cour_mappings = calculate_cour_mappings(episode, tmdb_id, season)
+    end
     local valid_eps, valid_pairs, valid_seasons = build_valid_mapping_sets(cour_mappings)
 
     local queries = {}
@@ -880,7 +1050,14 @@ local function fetch_sub_list(video_name)
             mp.msg.warn("No TMDB ID found, searching by title only")
         end
 
-        subs_list = fetch_sub_list_anime(media.title, media.season or 1, media.episode, tmdb_id)
+        if USE_TVDB_COUR and TVDB_API_KEY ~= "" then
+            local tvdb_result = tvdb_resolve_episode_sync(media.title, media.episode)
+            subs_list = fetch_sub_list_anime(media.title, media.season or 1, media.episode, tmdb_id, {
+                tvdb_result = tvdb_result,
+            })
+        else
+            subs_list = fetch_sub_list_anime(media.title, media.season or 1, media.episode, tmdb_id)
+        end
     elseif media.content_type == "tv" and media.title and media.season and media.episode then
         mp.msg.info(string.format("Searching for TV show: %s S%02dE%02d", media.title, media.season, media.episode))
 
@@ -1350,6 +1527,7 @@ save_runtime_cache = function()
         tmdb_cache = tmdb_cache,
         subdl_sd_cache = subdl_sd_cache,
         tmdb_seasons = cache_mod.stringify_keys(tmdb_season_cache),
+        tvdb_series = tvdb_series_cache,
         season_files = cache_mod.stringify_keys(season_files_map),
         movie_files = movie_files_map  -- No numeric keys, just title -> file
     }
@@ -1378,6 +1556,7 @@ load_runtime_cache = function()
             tmdb_cache = cache_data.tmdb or cache_data.tmdb_cache or {}
             subdl_sd_cache = cache_data.subdl_sd_cache or {}
             tmdb_season_cache = cache_data.tmdb_seasons or {}
+            tvdb_series_cache = cache_data.tvdb_series or {}
             
             -- Load season files (TV/anime) - only if files still exist
             if cache_data.season_files then
