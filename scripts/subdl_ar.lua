@@ -16,6 +16,7 @@ local media_util = require 'subdl_ar.util.media'
 local match_util = require 'subdl_ar.util.match'
 local config_loader = require 'subdl_ar.config'
 local subdl_provider = require 'subdl_ar.providers.subdl'
+local cache_mod = require 'subdl_ar.cache'
 
 local trim = url_util.trim
 local strip_quotes = url_util.strip_quotes
@@ -327,7 +328,7 @@ local function get_tmdb_id(media_type, title, year)
     if json and json.results and #json.results > 0 then
         local first_result = json.results[1]
         tmdb_cache[cache_key] = { id = first_result.id, type = media_type }
-        save_runtime_cache()
+        cache_mod.schedule_save()
         mp.msg.info("TMDB ID found:", first_result.id, "Type:", media_type)
         return first_result.id, media_type
     end
@@ -344,7 +345,7 @@ local function get_tmdb_id(media_type, title, year)
             for _, result in ipairs(fallback_json.results) do
                 if result.media_type == "movie" or result.media_type == "tv" then
                     tmdb_cache[cache_key] = { id = result.id, type = result.media_type }
-                    save_runtime_cache()
+                    cache_mod.schedule_save()
                     return result.id, result.media_type
                 end
             end
@@ -368,10 +369,10 @@ end
 local function get_tmdb_season_info(tmdb_id)
     if not tmdb_id then return nil end
     
-    -- Check cache first
-    if tmdb_season_cache[tmdb_id] then
+    local key = tostring(tmdb_id)
+    if tmdb_season_cache[key] then
         mp.msg.info("TMDB: using cached season info for ID", tmdb_id)
-        return tmdb_season_cache[tmdb_id]
+        return tmdb_season_cache[key]
     end
     
     local query = string.format("%s/tv/%s?api_key=%s", 
@@ -390,8 +391,7 @@ local function get_tmdb_season_info(tmdb_id)
         end
     end
     
-    -- Cache the result
-    tmdb_season_cache[tmdb_id] = seasons
+    tmdb_season_cache[tostring(tmdb_id)] = seasons
     return seasons
 end
 
@@ -416,7 +416,7 @@ local function get_subdl_sd_id(media_type, tmdb_id, title)
     local sd_id = subdl_provider.get_sd_id(media_type, tmdb_id, title)
     if sd_id then
         subdl_sd_cache[cache_key] = sd_id
-        save_runtime_cache()
+        cache_mod.schedule_save()
     end
     return sd_id
 end
@@ -1172,17 +1172,6 @@ local function enhanced_auto_fetch_if_needed()
     end
 end
 
--- Convert table with numeric keys to string keys for JSON compatibility
-local function stringify_keys(t)
-    if type(t) ~= "table" then return t end
-    local result = {}
-    for k, v in pairs(t) do
-        local key = tostring(k)
-        result[key] = stringify_keys(v)
-    end
-    return result
-end
-
 -- Save cache to disk for persistence
 save_runtime_cache = function()
     -- Create cache directory if it doesn't exist
@@ -1193,8 +1182,8 @@ save_runtime_cache = function()
         tmdb = tmdb_cache,
         tmdb_cache = tmdb_cache,
         subdl_sd_cache = subdl_sd_cache,
-        tmdb_seasons = stringify_keys(tmdb_season_cache),
-        season_files = stringify_keys(season_files_map),
+        tmdb_seasons = cache_mod.stringify_keys(tmdb_season_cache),
+        season_files = cache_mod.stringify_keys(season_files_map),
         movie_files = movie_files_map  -- No numeric keys, just title -> file
     }
     local json_str = utils.format_json(cache_data)
@@ -1208,6 +1197,8 @@ save_runtime_cache = function()
     end
 end
 
+cache_mod.init(save_runtime_cache, mp)
+
 -- Load cache from disk
 load_runtime_cache = function()
     local f = io.open(CACHE_FILE, "r")
@@ -1216,6 +1207,7 @@ load_runtime_cache = function()
         f:close()
         local cache_data = utils.parse_json(content)
         if cache_data then
+            cache_data = cache_mod.migrate_keys(cache_data)
             tmdb_cache = cache_data.tmdb or cache_data.tmdb_cache or {}
             subdl_sd_cache = cache_data.subdl_sd_cache or {}
             tmdb_season_cache = cache_data.tmdb_seasons or {}
@@ -1381,7 +1373,7 @@ index_local_files()
 load_media_catalog()
 
 mp.register_event("file-loaded", enhanced_auto_fetch_if_needed)
-mp.register_event("shutdown", save_runtime_cache)  -- Just save cache, don't delete any files
+mp.register_event("shutdown", function() cache_mod.force_save() end)
 mp.add_key_binding("Ctrl+Shift+V", "subdl_ar_next", fetch_next_sub)
 mp.add_key_binding("Ctrl+V", "subdl_ar_toggle_deep", toggle_deep_search)
 mp.add_key_binding("Alt+V", "subdl_ar_search", manual_search)
