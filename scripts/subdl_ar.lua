@@ -14,6 +14,7 @@ require 'subdl_ar.init'
 local url_util = require 'subdl_ar.util.url'
 local media_util = require 'subdl_ar.util.media'
 local match_util = require 'subdl_ar.util.match'
+local activation_util = require 'subdl_ar.util.activation'
 local config_loader = require 'subdl_ar.config'
 local subdl_provider = require 'subdl_ar.providers.subdl'
 local opensubs_provider = require 'subdl_ar.providers.opensubtitles'
@@ -21,6 +22,7 @@ local tvdb_provider = require 'subdl_ar.providers.tvdb'
 local oshash_mod = require 'subdl_ar.oshash'
 local cache_mod = require 'subdl_ar.cache'
 local http_mod = require 'subdl_ar.http'
+local uosc_picker = require 'subdl_ar.ui.uosc_picker'
 
 local trim = url_util.trim
 local strip_quotes = url_util.strip_quotes
@@ -68,10 +70,12 @@ local TMDB_API_URL = "https://api.themoviedb.org/3"
 local CURL_TIMEOUT = 10
 local MAX_RETRIES = 2
 local DEEP_SEARCH = (os.getenv("SUBDL_DEEP_SEARCH") == "1")
+local CACHE_TO_MEDIA_DIR = (os.getenv("CACHE_TO_MEDIA_DIR") == "1")
 local OPENSUBS_API_KEY = _cfg.opensubs_api_key or ""
 local OPENSUBS_APP_NAME = _cfg.opensubs_app_name or "subdl_ar v1"
 local TVDB_API_KEY = _cfg.tvdb_api_key or ""
 local USE_TVDB_COUR = _cfg.use_tvdb_cour or false
+local has_uosc = false
 
 -- Magic number constants
 local EARLY_STOP_COUNT = 5
@@ -109,6 +113,7 @@ local downloaded_subs = {}
 local current_index = {}
 local season_files_map = {}
 local movie_files_map = {}
+local last_subs_list = nil
 
 local tmdb_cache = {}
 local tmdb_season_cache = {}
@@ -1096,6 +1101,7 @@ local function fetch_sub_list(video_name)
     end
 
     subs_cache[video_name] = subs_list
+    last_subs_list = subs_list
 
     mp.msg.info(string.format("Found %d Arabic subtitles total", #subs_list))
     mp.msg.info("Top 5 subtitle candidates:")
@@ -1203,7 +1209,11 @@ local function download_and_load(sub, video_name, season, episode, valid_episode
 
         local sub_file = process_download_content(tmp, title, content_type, season, episode, valid_episodes, valid_pairs, video_name, dl_url)
         safe_rm_rf(tmp)
-        if sub_file then mp.commandv("sub-add", sub_file); mp.msg.info("SubDL: loaded subtitle", sub_file) end
+        if sub_file then
+            local video_path = mp.get_property("path")
+            activation_util.activate(mp, sub_file, video_path, CACHE_TO_MEDIA_DIR)
+            mp.msg.info("SubDL: loaded subtitle", sub_file)
+        end
         if on_done then on_done(sub_file) end
         return sub_file
     end
@@ -1256,7 +1266,8 @@ local function fetch_bulk_subs(subs_batch, video_name, season, episode, valid_ep
                     local loaded = process_download_content(extract_dir, title, content_type, season, episode, valid_episodes, valid_pairs, video_name, dl_url)
                     if loaded then
                         safe_rm_rf(tmp_base)
-                        mp.commandv("sub-add", loaded)
+                        local video_path = mp.get_property("path")
+                        activation_util.activate(mp, loaded, video_path, CACHE_TO_MEDIA_DIR)
                         mp.msg.info("SubDL: loaded subtitle", loaded)
                         if on_done then on_done(loaded) end
                         return
@@ -1655,6 +1666,41 @@ local function manual_search()
     end)
 end
 
+local function show_picker(subs)
+    if not has_uosc then return end
+    if not subs or #subs == 0 then
+        mp.osd_message("No Arabic subtitles to pick", 2)
+        return
+    end
+    local menu = uosc_picker.build_menu(subs)
+    mp.commandv("script-message-to", "uosc", "open-menu", "command-menu",
+                utils.format_json(menu))
+end
+
+local function subdl_ar_pick()
+    if not is_enabled() then return end
+    local path = mp.get_property("path")
+    if not path then return end
+
+    local video_name = basename(path)
+    local cached = subs_cache[video_name]
+    if cached and #cached > 0 then
+        show_picker(cached)
+        return
+    end
+
+    osd_show("Searching for Arabic subtitles...")
+    mp.add_timeout(0, function()
+        local subs = fetch_sub_list(video_name)
+        osd_remove()
+        if not subs or #subs == 0 then
+            mp.osd_message("No Arabic subtitles found", 3)
+            return
+        end
+        show_picker(subs)
+    end)
+end
+
 -- Handle manual search query
 local function handle_manual_search(query)
     if not is_enabled() then return end
@@ -1725,13 +1771,46 @@ mp.register_event("shutdown", function() cache_mod.force_save() end)
 mp.add_key_binding("Ctrl+Shift+V", "subdl_ar_next", fetch_next_sub)
 mp.add_key_binding("Ctrl+V", "subdl_ar_toggle_deep", toggle_deep_search)
 mp.add_key_binding("Alt+V", "subdl_ar_search", manual_search)
+mp.add_key_binding("Ctrl+Alt+V", "subdl_ar_pick", subdl_ar_pick)
 mp.register_script_message("subdl_ar_search", handle_manual_search)
+mp.register_script_message("subdl_ar_download_item", function(index)
+    local path = mp.get_property("path")
+    if not path then return end
+    local video_name = basename(path)
+    local subs = subs_cache[video_name] or last_subs_list
+    if not subs or not subs[index] then
+        mp.osd_message("Invalid subtitle index", 2)
+        return
+    end
+    local sub = subs[index]
+    local media = resolve_media_info(path, video_name)
+    local dl_season = media.season or 1
+    local dl_episode = media.episode
+    local valid_episodes, valid_pairs = nil, nil
+
+    if media.content_type == "anime" and media.title and dl_episode then
+        local extra_candidates = path_title_candidates(path)
+        local candidates = merge_candidates(normalize_title_candidates(media.title), extra_candidates)
+        local tmdb_id = get_tmdb_id_candidates("tv", candidates)
+        local cour_mappings = calculate_cour_mappings(dl_episode, tmdb_id, dl_season)
+        valid_episodes, valid_pairs = build_valid_mapping_sets(cour_mappings)
+    end
+
+    download_and_load(sub, video_name, dl_season, dl_episode, valid_episodes, valid_pairs, function(loaded)
+        if loaded then
+            mp.osd_message("Loaded: " .. (loaded:match("([^/]+)$") or loaded), 3)
+        else
+            mp.osd_message("Failed to load subtitle", 3)
+        end
+    end)
+end)
 mp.register_script_message("uosc-version", function()
+    has_uosc = true
     publish_uosc_button()
 end)
 mp.observe_property("track-list", "native", function()
     publish_uosc_button()
 end)
 
-mp.msg.info("SubDL Arabic subtitle loader initialized (Ctrl+Shift+V=next, Ctrl+V=deep, Alt+V=manual search)")
+mp.msg.info("SubDL Arabic subtitle loader initialized (Ctrl+Shift+V=next, Ctrl+V=deep, Alt+V=manual, Ctrl+Alt+V=picker)")
 mp.msg.info("Subtitle database: " .. SUBS_DIR)
