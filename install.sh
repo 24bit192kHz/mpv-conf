@@ -51,7 +51,7 @@ for item in \
     script-modules \
     script-opts \
     scripts \
-    cuda-crop-py \
+    cuda-crop-cpp \
     shaders
 do
     if [ -e "$src/$item" ]; then
@@ -59,14 +59,19 @@ do
     fi
 done
 
-if [ -d "$target/cuda-crop-py" ]; then
-    if command -v uv >/dev/null 2>&1; then
-        echo "Installing cuda-crop-py dependencies"
-        (cd "$target/cuda-crop-py" && uv sync)
+# cuda-crop-cpp: native C++ sidecar (ffprobe + ffmpeg cropdetect). Needs cmake,
+# a C++17 compiler, and nlohmann_json. Try to build; otherwise print manual steps.
+if [ -d "$target/cuda-crop-cpp" ]; then
+    if command -v cmake >/dev/null 2>&1 && \
+       { command -v c++ >/dev/null 2>&1 || command -v g++ >/dev/null 2>&1 || command -v clang++ >/dev/null 2>&1; }; then
+        echo "Building cuda-crop-cpp"
+        (cd "$target/cuda-crop-cpp" && cmake -B build && cmake --build build) || \
+            echo "Build failed (missing nlohmann_json?). Install it (e.g. apt install nlohmann-json3-dev) then re-run:" \
+                 "cd \"$target/cuda-crop-cpp\" && cmake -B build && cmake --build build" >&2
     else
-        echo "uv is not installed; install it, then run: cd \"$target/cuda-crop-py\" && uv sync" >&2
+        echo "cmake/C++ compiler not found; dynamic crop needs cuda-crop-cpp built:" >&2
+        echo "  install cmake + a C++ compiler + nlohmann_json, then: cd \"$target/cuda-crop-cpp\" && cmake -B build && cmake --build build" >&2
     fi
 fi
 
 echo "Installed mpv config to $target"
-echo "Dynamic crop uses the bundled cuda-crop-py at $target/cuda-crop-py."

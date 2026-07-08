@@ -32,12 +32,24 @@ Keys are **intentionally not committed**. Copy `.env.example` to `.env` and fill
 
 `script-opts/subdl_ar.conf` is also supported for mpv-style overrides.
 
-## Dynamic crop (CUDA)
+## Dynamic crop
 
-Dynamic crop uses the Python analyzer in `cuda-crop-py/`. The installer runs `uv sync`
-automatically when `uv` is available; otherwise:
+Dynamic crop uses the native C++ sidecar in `cuda-crop-cpp/` (ffprobe + ffmpeg
+`cropdetect` — no Python). The installer tries to build it automatically; if it
+can't, build manually. Requires CMake, a C++17 compiler, `nlohmann_json`, and
+ffprobe/ffmpeg at runtime.
+
+Linux / macOS:
 
 ```sh
-cd ~/.config/mpv/cuda-crop-py          # Windows: cd "%APPDATA%\mpv\cuda-crop-py"
-uv sync
+cd ~/.config/mpv/cuda-crop-cpp          # deps e.g.: apt install nlohmann-json3-dev
+cmake -B build && cmake --build build
+```
+
+Windows (CMake + Visual Studio; `nlohmann_json` via vcpkg):
+
+```powershell
+cd "$env:APPDATA\mpv\cuda-crop-cpp"
+cmake -B build
+cmake --build build --config Release
 ```

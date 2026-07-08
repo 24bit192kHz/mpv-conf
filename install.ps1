@@ -34,21 +34,29 @@ New-Item -ItemType Directory -Force -Path $target | Out-Null
 
 $items = @(
     'mpv.conf', '.env.example', 'input.conf', 'profiles.conf', 'hdr-toys.conf',
-    'fonts', 'script-modules', 'script-opts', 'scripts', 'cuda-crop-py', 'shaders'
+    'fonts', 'script-modules', 'script-opts', 'scripts', 'cuda-crop-cpp', 'shaders'
 )
 foreach ($it in $items) {
     $p = Join-Path $src.FullName $it
     if (Test-Path $p) { Copy-Item -Path $p -Destination $target -Recurse -Force }
 }
 
-if (Test-Path (Join-Path $target 'cuda-crop-py')) {
-    $uv = Get-Command uv -ErrorAction SilentlyContinue
-    if ($uv) {
-        Write-Host 'Installing cuda-crop-py dependencies'
-        Push-Location (Join-Path $target 'cuda-crop-py')
-        try { uv sync } finally { Pop-Location }
+# cuda-crop-cpp: native C++ sidecar (ffprobe + ffmpeg cropdetect). Needs CMake,
+# a C++ toolchain, and nlohmann_json (e.g. via vcpkg). Try to build; else print steps.
+$cropDir = Join-Path $target 'cuda-crop-cpp'
+if (Test-Path $cropDir) {
+    $cmake = Get-Command cmake -ErrorAction SilentlyContinue
+    if ($cmake) {
+        Write-Host 'Building cuda-crop-cpp'
+        Push-Location $cropDir
+        try {
+            cmake -B build
+            cmake --build build --config Release
+        } catch {
+            Write-Host 'Build failed. Install a C++ toolchain (Visual Studio) + nlohmann_json (vcpkg), then re-run cmake -B build; cmake --build build --config Release'
+        } finally { Pop-Location }
     } else {
-        Write-Host 'uv is not installed; install it, then run: cd "%APPDATA%\mpv\cuda-crop-py"; uv sync'
+        Write-Host 'cmake not found; dynamic crop needs cuda-crop-cpp built: install CMake + Visual Studio (C++), then cmake -B build; cmake --build build --config Release'
     }
 }
 
