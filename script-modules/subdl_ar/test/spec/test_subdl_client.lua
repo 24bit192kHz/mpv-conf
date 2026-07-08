@@ -192,6 +192,9 @@ do
   H.ok("get_sd_id URL has no api_key=", json_call.url:find("api_key=", 1, true) == nil)
   H.ok("get_sd_id URL carries tmdb_id=99999",
        json_call.url:find("tmdb_id=99999", 1, true) ~= nil)
+  -- v2 API 400s on tmdb_id without type=movie/type=tv
+  H.ok("get_sd_id URL carries type=tv (required by v2 with tmdb_id)",
+       json_call.url:find("type=tv", 1, true) ~= nil)
 end
 
  ---------------------------------------------------------------------------

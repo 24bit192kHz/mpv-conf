@@ -30,7 +30,8 @@ local last_async_handle = 1000
 local function flush_callbacks()
   while #pending_callbacks > 0 do
     local entry = table.remove(pending_callbacks, 1)
-    entry.cb(entry.result)
+    -- mpv's command_native_async invokes cb(success, result, error)
+    entry.cb(true, entry.result)
   end
 end
 
@@ -160,7 +161,7 @@ do
           headers = { ["x-ratelimit-remaining"] = "99" },
         }
       end
-      cb(result)
+      cb(true, result)
     end
     return handle
   end
@@ -222,7 +223,7 @@ do
           headers = {},
         }
       end
-      cb(result)
+      cb(true, result)
     end
     return handle
   end
@@ -332,7 +333,7 @@ do
   stubs_mp.command_native_async = function(cmd, cb)
     last_async_handle = last_async_handle + 1
     table.insert(async_calls, { cmd = cmd })
-    if cb then cb({ status = 0, stdout = '""\n200', stderr = "" }) end
+    if cb then cb(true, { status = 0, stdout = '""\n200', stderr = "" }) end
     return fake_handle
   end
 

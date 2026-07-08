@@ -281,6 +281,7 @@ subdl_provider.configure {
     http_get_raw = http_get_raw,
     http_get_json_async = http_get_json_async,
     http_get_raw_async = http_get_raw_async,
+    utils = utils,
 }
 
 
@@ -310,7 +311,7 @@ if TVDB_API_KEY ~= "" then
                 args = args,
                 capture_stdout = true,
                 playback_only = false,
-            }, function(res)
+            }, function(ok, res)
                 local resp_body, http_code, _headers = nil, 0, {}
                 if res.stdout then
                     local body_raw, code = res.stdout:match("^([%s%S]*)\n(%d%d%d)%s*$")
@@ -699,7 +700,7 @@ local function fetch_sub_list_tv(show_title, season, episode, tmdb_id)
     if tmdb_id then
         local sd_id = get_subdl_sd_id("tv", tmdb_id, show_title)
         if sd_id then table.insert(queries, string.format("type=tv&sd_id=%s&season_number=%d&episode_number=%d", sd_id, season, episode)) end
-        table.insert(queries, string.format("tmdb_id=%s&season_number=%d&episode_number=%d", tmdb_id, season, episode))
+        table.insert(queries, string.format("type=tv&tmdb_id=%s&season_number=%d&episode_number=%d", tmdb_id, season, episode))
     end
     local es = string.format("S%02dE%02d", season, episode)
     -- FIX 4: URL encode the entire query value including spaces
@@ -738,7 +739,7 @@ local function fetch_sub_list_movie(title, year, tmdb_id)
     local candidates = normalize_title_candidates(title)
     local function add(q) table.insert(queries, string.format("languages=ar&subs_per_page=50&%s", q)) end
     
-    if tmdb_id then add("tmdb_id=" .. tmdb_id) end
+    if tmdb_id then add("type=movie&tmdb_id=" .. tmdb_id) end
     add("film_name=" .. url_safe(title))
     -- FIX 5: URL encode the year query properly
     if year then add("film_name=" .. url_safe(title .. " " .. year)) end
@@ -820,10 +821,10 @@ local function fetch_sub_list_anime(title, season, episode, tmdb_id, opts)
         for i = 1, max_mapping_queries do
             local m = cour_mappings[i]
             if m then
-                add(string.format("tmdb_id=%s&season_number=%d&episode_number=%d", tmdb_id, m.season, m.ep))
+                add(string.format("type=tv&tmdb_id=%s&season_number=%d&episode_number=%d", tmdb_id, m.season, m.ep))
             end
         end
-        add(string.format("tmdb_id=%s", tmdb_id))
+        add(string.format("type=tv&tmdb_id=%s", tmdb_id))
     end
 
     for i = 1, max_mapping_queries do

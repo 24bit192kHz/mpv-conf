@@ -23,6 +23,7 @@ local opts = {
     apply_before_seconds = 0.0,
     restore_before_seconds = 0.0,
     presentation_lead_frames = 0.0,
+    presentation_lag_frames = 0.0,
     symmetry_tolerance = 96,
     min_letterbox_aspect = 2.0,
     max_letterbox_aspect = 2.60,
@@ -141,6 +142,12 @@ local function reset_transform()
     mp.set_property_number("video-zoom", 0)
     mp.set_property_number("video-pan-x", 0)
     mp.set_property_number("video-pan-y", 0)
+end
+
+local function apply_transform(zoom, pan_x, pan_y)
+    mp.set_property_number("video-pan-x", pan_x)
+    mp.set_property_number("video-pan-y", pan_y)
+    mp.set_property_number("video-zoom", zoom)
 end
 
 local function reset_render_state()
@@ -428,8 +435,12 @@ local function transform_for_crop(crop, panscan)
     local zoom = full_zoom * panscan
     local center_x = x + (w / 2)
     local center_y = y + (h / 2)
-    local pan_x = -((center_x - (sw / 2)) / sw) * panscan
-    local pan_y = -((center_y - (sh / 2)) / sh) * panscan
+    local offset_x = center_x - (sw / 2)
+    local offset_y = center_y - (sh / 2)
+    if math.abs(offset_x) <= opts.symmetry_tolerance then offset_x = 0 end
+    if math.abs(offset_y) <= opts.symmetry_tolerance then offset_y = 0 end
+    local pan_x = -(offset_x / sw) * panscan
+    local pan_y = -(offset_y / sh) * panscan
     return zoom, pan_x, pan_y
 end
 
@@ -438,9 +449,7 @@ local function apply_render_crop(crop, panscan)
         local zoom, pan_x, pan_y = transform_for_crop(crop, panscan)
         if not zoom then return nil end
         set_panscan(opts.panscan_full)
-        mp.set_property_number("video-zoom", zoom)
-        mp.set_property_number("video-pan-x", pan_x)
-        mp.set_property_number("video-pan-y", pan_y)
+        apply_transform(zoom, pan_x, pan_y)
         return zoom, pan_x, pan_y
     end
 
@@ -815,6 +824,7 @@ local function queue_crop(crop, scan_start, parsed)
         apply_before = opts.restore_before_seconds
     end
     apply_before = apply_before + (opts.presentation_lead_frames * frame_duration_seconds())
+    apply_before = apply_before - (opts.presentation_lag_frames * frame_duration_seconds())
 
     local apply_at = needed_at - apply_before
     local timing = {
@@ -1003,6 +1013,20 @@ local function schedule()
     mp.add_timeout(0.25, run_scan)
 end
 
+local function start_runtime_scans()
+    if opts.scan_driver == "sidecar" then
+        if timer then
+            timer:kill()
+            timer = nil
+        end
+        running = false
+        start_sidecar()
+    else
+        stop_sidecar()
+        schedule()
+    end
+end
+
 mp.observe_property("time-pos", "number", function(_name, value)
     if value and scans_allowed() then
         drain_pending_events(value)
@@ -1052,14 +1076,14 @@ local function set_runtime_mode(mode)
             stop_runtime_scans()
         else
             one_shot_locked = false
-            if not timer then schedule() end
+            start_runtime_scans()
         end
     else
         runtime_mode = "continuous"
         opts.enabled = true
         one_shot_locked = false
         reset_crop_state()
-        schedule()
+        start_runtime_scans()
     end
 
     local message = mode_message()

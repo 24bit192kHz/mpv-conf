@@ -140,7 +140,7 @@ end
 function M.get_sd_id(media_type, tmdb_id, title)
   if not tmdb_id then return nil end
 
-  local query = string.format("tmdb_id=%s&languages=ar", tmdb_id)
+  local query = string.format("type=%s&tmdb_id=%s&languages=ar", media_type, tmdb_id)
   local _, results = M.search(query, { unpack = false })
 
   if results then
@@ -312,7 +312,7 @@ function M.download_async(sub, on_done)
       args = curl_args,
       capture_stdout = true,
       playback_only = false,
-    }, function(res)
+    }, function(ok, res)
       local code = tonumber(res.stdout) or 0
       local zip_info = get_utils().file_info(tmp_zip)
       if code < 200 or code >= 300 or not zip_info or zip_info.size == 0 then

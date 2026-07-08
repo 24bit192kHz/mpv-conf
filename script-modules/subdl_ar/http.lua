@@ -214,7 +214,7 @@ function M.request_async(url, opts, on_done)
       args = curl_args,
       capture_stdout = true,
       playback_only = false,
-    }, function(res)
+    }, function(ok, res)
       local body, http_code, headers = parse_curl_output(res.stdout)
       local remaining = headers["x-ratelimit-remaining"]
       local reset = headers["x-ratelimit-reset"]
