@@ -46,13 +46,11 @@ for item in \
     .env.example \
     input.conf \
     profiles.conf \
-    hdr-toys.conf \
     fonts \
     script-modules \
     script-opts \
     scripts \
-    cuda-crop-cpp \
-    shaders
+    cuda-crop-cpp
 do
     if [ -e "$src/$item" ]; then
         cp -R "$src/$item" "$target/"

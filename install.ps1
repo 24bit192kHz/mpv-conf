@@ -33,8 +33,8 @@ if (Test-Path $target) {
 New-Item -ItemType Directory -Force -Path $target | Out-Null
 
 $items = @(
-    'mpv.conf', '.env.example', 'input.conf', 'profiles.conf', 'hdr-toys.conf',
-    'fonts', 'script-modules', 'script-opts', 'scripts', 'cuda-crop-cpp', 'shaders'
+    'mpv.conf', '.env.example', 'input.conf', 'profiles.conf',
+    'fonts', 'script-modules', 'script-opts', 'scripts', 'cuda-crop-cpp'
 )
 foreach ($it in $items) {
     $p = Join-Path $src.FullName $it
