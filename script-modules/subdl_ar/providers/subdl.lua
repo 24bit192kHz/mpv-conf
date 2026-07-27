@@ -39,6 +39,9 @@ M._cfg = {
   download_url = "https://dl.subdl.com",
   api_key      = "",
   backup_key   = "",
+  -- Active key used for dl.subdl.com downloads (?api_key=). Selected by
+  -- ensure_download_key() based on remaining daily download quota.
+  download_key = nil,
 }
 
 -- Default HTTP deps. No-op stubs so requiring the module without configure()
@@ -161,40 +164,244 @@ function M.get_sd_id(media_type, tmdb_id, title)
   return nil
 end
 
+-- rewrite_download_api_key(url, api_key): force ?api_key= on a dl.subdl.com URL.
+-- Search results embed the key used for search; when that key is out of
+-- download quota we must swap to the backup key without re-searching.
+function M.rewrite_download_api_key(url, api_key)
+  if not url or url == "" or not api_key or api_key == "" then
+    return url
+  end
+  if url:find("api_key=", 1, true) then
+    return (url:gsub("api_key=[^&]*", "api_key=" .. api_key))
+  end
+  local sep = url:find("?", 1, true) and "&" or "?"
+  return url .. sep .. "api_key=" .. api_key
+end
+
+-- Current key for downloads (session-sticky after ensure_download_key / failover).
+function M.get_download_key()
+  return M._cfg.download_key or M._cfg.api_key or ""
+end
+
+function M.set_download_key(key)
+  if key == nil or key == "" then
+    M._cfg.download_key = nil
+  else
+    M._cfg.download_key = key
+  end
+end
+
 -- api_download_url(sub) -> url string
 -- Uses sub.url from the API response (relative path on dl.subdl.com).
 -- Falls back to sub_id-based construction if sub.url is unavailable.
+-- Always rewrites ?api_key= to the active download key when one is set.
 function M.api_download_url(sub)
   if type(sub) ~= "table" then
     return nil
   end
+  local url = nil
   -- Prefer the URL from the API response (relative path like /subtitle/...).
   local sub_url = sub.url or sub.download_url
   if sub_url and sub_url ~= "" then
     -- If already absolute, return as-is; otherwise prepend download_url base.
     if sub_url:match("^https?://") then
-      return sub_url
+      url = sub_url
+    else
+      url = M._cfg.download_url .. sub_url
     end
-    return M._cfg.download_url .. sub_url
+  else
+    -- Fallback: construct from sub_id (legacy path, may not work with v2).
+    local sub_id = sub.nId or sub.id or sub.sd_id
+    if sub_id then
+      url = M._cfg.download_url .. "/subtitle/" .. tostring(sub_id) .. ".zip"
+    end
   end
-  -- Fallback: construct from sub_id (legacy path, may not work with v2).
-  local sub_id = sub.nId or sub.id or sub.sd_id
-  if sub_id then
-    return M._cfg.download_url .. "/subtitle/" .. tostring(sub_id) .. ".zip"
+  if not url then return nil end
+  local key = M.get_download_key()
+  if key ~= "" then
+    url = M.rewrite_download_api_key(url, key)
   end
+  return url
+end
+
+-- Stable identity for a subtitle entry (used to dedupe download candidates).
+function M.sub_identity(sub)
+  if type(sub) ~= "table" then return nil end
+  local raw = sub.url or sub.download_url
+  if raw and raw ~= "" then
+    -- Strip query string so api_key differences don't create false uniques.
+    return (raw:gsub("%?.*$", ""))
+  end
+  local id = sub.nId or sub.id or sub.sd_id
+  if id then return "id:" .. tostring(id) end
+  if sub.release_name then return "rn:" .. tostring(sub.release_name) end
   return nil
 end
 
-function M.download(sub)
-  if type(sub) ~= "table" then return nil, 0, nil end
+-- Deduplicate a subtitle list by download identity, preserving order.
+function M.dedupe_subs(subs)
+  if type(subs) ~= "table" then return {} end
+  local out, seen = {}, {}
+  for _, sub in ipairs(subs) do
+    local id = M.sub_identity(sub) or ("row:" .. tostring(#out + 1))
+    if not seen[id] then
+      seen[id] = true
+      out[#out + 1] = sub
+    end
+  end
+  return out
+end
 
-  local url = M.api_download_url(sub)
+-- get_usage_async(on_done[, api_key]): GET /api/v2/me (does not count against search quota).
+-- on_done(usage_json_or_nil, http_code)
+function M.get_usage_async(on_done, api_key)
+  local key = api_key or M._cfg.api_key or ""
+  local url = "https://api.subdl.com/api/v2/me"
+  local headers = { "Authorization: Bearer " .. key }
+  if M._http.get_json_async then
+    return M._http.get_json_async(url, {
+      headers = headers,
+      api_key = key,
+      backup_key = "", -- do not rotate; /me is diagnostic only
+    }, function(a1, a2, a3)
+      local success, json, http_code
+      if type(a1) == "boolean" then
+        success, json, http_code = a1, a2, a3
+      else
+        json, http_code = a1, a2
+        success = (json ~= nil)
+      end
+      if on_done then on_done((success and json) or nil, http_code or 0) end
+    end)
+  end
+  -- Sync path: temporarily use the requested key for auth_headers() if needed.
+  local json, code
+  if M._http.get_json then
+    -- Prefer passing headers directly; stubs and real wrappers accept opts.headers.
+    json, code = M._http.get_json(url, { headers = headers, api_key = key })
+  end
+  if on_done then on_done(json, code or 0) end
+  return nil
+end
+
+-- download_quota(usage_json) -> { used, limit, remaining, reset_at } or nil
+function M.download_quota(usage_json)
+  if type(usage_json) ~= "table" then return nil end
+  local dl = usage_json.usage and usage_json.usage.downloads
+  if type(dl) ~= "table" then return nil end
+  return {
+    used = tonumber(dl.used) or 0,
+    limit = tonumber(dl.limit) or 0,
+    remaining = tonumber(dl.remaining) or 0,
+    reset_at = dl.reset_at,
+    period = dl.period,
+  }
+end
+
+-- ensure_download_key(on_done): pick a key with remaining download quota.
+-- Prefers primary, then backup. Sticky for the session via set_download_key.
+-- on_done(key_or_nil, quota_or_nil, source)  source = "primary"|"backup"|"cached"|nil
+function M.ensure_download_key(on_done)
+  local primary = M._cfg.api_key or ""
+  local backup = M._cfg.backup_key or ""
+  local cached = M._cfg.download_key
+
+  local function finish(key, quota, source)
+    if key and key ~= "" then
+      M.set_download_key(key)
+    end
+    if on_done then on_done(key, quota, source) end
+  end
+
+  -- If we already pinned a download key this session, re-check it still has quota.
+  local function check_key(key, source, on_empty)
+    if not key or key == "" then
+      if on_empty then on_empty() end
+      return
+    end
+    M.get_usage_async(function(usage)
+      local q = M.download_quota(usage)
+      if q and q.remaining > 0 then
+        finish(key, q, source)
+      elseif on_empty then
+        on_empty(q)
+      else
+        finish(nil, q, nil)
+      end
+    end, key)
+  end
+
+  local function try_backup(primary_q)
+    if backup ~= "" and backup ~= primary then
+      check_key(backup, "backup", function(backup_q)
+        -- Both empty: report primary quota (or backup) so caller can message.
+        finish(nil, backup_q or primary_q, nil)
+      end)
+    else
+      finish(nil, primary_q, nil)
+    end
+  end
+
+  if cached and cached ~= "" then
+    check_key(cached, "cached", function()
+      -- Cached key exhausted: fall through primary → backup.
+      check_key(primary, "primary", try_backup)
+    end)
+    return nil
+  end
+
+  check_key(primary, "primary", try_backup)
+  return nil
+end
+
+-- download_quota(usage_json) -> { used, limit, remaining, reset_at } or nil
+function M.download_quota(usage_json)
+  local dl = usage_json and usage_json.usage and usage_json.usage.downloads
+  if type(dl) ~= "table" then return nil end
+  return {
+    used = tonumber(dl.used) or 0,
+    limit = tonumber(dl.limit) or 0,
+    remaining = tonumber(dl.remaining) or 0,
+    reset_at = dl.reset_at,
+    period = dl.period,
+  }
+end
+
+-- Format a human-readable quota exhausted message.
+function M.quota_exhausted_message(q)
+  if not q then return "SubDL download quota exhausted. Try later." end
+  local msg = string.format("SubDL download quota exhausted (%d/%d)", q.used, q.limit)
+  if q.reset_at and q.reset_at ~= "" then
+    local pretty = tostring(q.reset_at):gsub("T", " "):gsub("%.%d+Z$", " UTC"):gsub("Z$", " UTC")
+    msg = msg .. ". Resets " .. pretty
+  end
+  return msg
+end
+
+-- Parse SubDL reset_at ISO timestamp to a rough unix time (best-effort).
+-- Returns nil if unparseable.
+function M.parse_reset_at(reset_at)
+  if not reset_at or type(reset_at) ~= "string" then return nil end
+  local y, mo, d, h, mi, s = reset_at:match("^(%d%d%d%d)%-(%d%d)%-(%d%d)T(%d%d):(%d%d):(%d%d)")
+  if not y then return nil end
+  return os.time({
+    year = tonumber(y), month = tonumber(mo), day = tonumber(d),
+    hour = tonumber(h), min = tonumber(mi), sec = tonumber(s),
+    isdst = false,
+  })
+end
+
+-- Internal: curl a zip URL, unzip, return first subtitle body and its name.
+-- Returns body, http_code, url_used, original_filename.
+local function download_url_to_srt(url)
   if not url then return nil, 0, nil end
 
   local tmp_zip = "/tmp/subdl_dl_" .. os.time() .. "_" .. math.random(10000) .. ".zip"
   local tmp_dir = "/tmp/subdl_dl_" .. os.time() .. "_" .. math.random(10000)
+  local u = get_utils()
+  if not u then return nil, 0, url end
 
-  local res = get_utils().subprocess({
+  local res = u.subprocess({
     args = {
       "curl", "-sS", "-o", tmp_zip, "-w", "%{http_code}",
       "--connect-timeout", "10", "--max-time", "20",
@@ -204,29 +411,25 @@ function M.download(sub)
   })
 
   local code = tonumber(res.stdout) or 0
-  local zip_info = get_utils().file_info(tmp_zip)
+  local zip_info = u.file_info(tmp_zip)
   if code < 200 or code >= 300 or not zip_info or zip_info.size == 0 then
     os.remove(tmp_zip)
     return nil, code, url
   end
 
-  get_utils().subprocess({
-    args = {"mkdir", "-p", tmp_dir},
-    cancellable = false,
-  })
-  get_utils().subprocess({
-    args = {"unzip", "-o", tmp_zip, "-d", tmp_dir},
-    cancellable = false,
-  })
+  u.subprocess({ args = {"mkdir", "-p", tmp_dir}, cancellable = false })
+  u.subprocess({ args = {"unzip", "-o", tmp_zip, "-d", tmp_dir}, cancellable = false })
 
   local srt_content = nil
-  local find_res = get_utils().subprocess({
+  local original_filename = nil
+  local find_res = u.subprocess({
     args = {"find", tmp_dir, "-type", "f", "-name", "*.srt", "-o", "-name", "*.ass", "-o", "-name", "*.ssa"},
     cancellable = false,
   })
   if find_res.status == 0 and find_res.stdout and find_res.stdout ~= "" then
     local first_path = find_res.stdout:match("^([^\n]+)")
     if first_path then
+      original_filename = first_path:match("([^/]+)$")
       local f = io.open(first_path, "r")
       if f then
         srt_content = f:read("*a")
@@ -236,9 +439,40 @@ function M.download(sub)
   end
 
   os.remove(tmp_zip)
-  get_utils().subprocess({ args = {"rm", "-rf", tmp_dir}, cancellable = false })
+  u.subprocess({ args = {"rm", "-rf", tmp_dir}, cancellable = false })
 
-  return srt_content, code, url
+  return srt_content, code, url, original_filename
+end
+
+-- Alternate key for download failover (backup if primary was used, else primary).
+local function alternate_download_key(used_key)
+  local primary = M._cfg.api_key or ""
+  local backup = M._cfg.backup_key or ""
+  if backup == "" or backup == primary then return nil end
+  if used_key == primary then return backup end
+  if used_key == backup then return primary end
+  -- used_key unknown / empty: prefer backup if primary was the default
+  if used_key == "" or used_key == primary then return backup end
+  return backup
+end
+
+function M.download(sub)
+  if type(sub) ~= "table" then return nil, 0, nil end
+
+  local url = M.api_download_url(sub)
+  if not url then return nil, 0, nil end
+
+  local body, code, used_url, original_filename = download_url_to_srt(url)
+  if code == 429 then
+    local alt = alternate_download_key(M.get_download_key())
+    if alt then
+      log("warn", "SubDL: download 429, retrying with alternate API key")
+      M.set_download_key(alt)
+      local retry_url = M.rewrite_download_api_key(url, alt)
+      body, code, used_url, original_filename = download_url_to_srt(retry_url)
+    end
+  end
+  return body, code, used_url, original_filename
 end
 
 function M.search_async(query_string, opts, on_done)
@@ -287,51 +521,77 @@ end
 
 function M.download_async(sub, on_done)
   if type(sub) ~= "table" then
-    if on_done then on_done(nil, 0, nil) end
+    if on_done then on_done(nil, 0, nil, nil) end
     return nil
   end
 
-  local url = M.api_download_url(sub)
-  if not url then
-    if on_done then on_done(nil, 0, nil) end
+  local base_url = M.api_download_url(sub)
+  if not base_url then
+    if on_done then on_done(nil, 0, nil, nil) end
     return nil
   end
 
-  local tmp_zip = "/tmp/subdl_dl_" .. os.time() .. "_" .. math.random(10000) .. ".zip"
-  local tmp_dir = "/tmp/subdl_dl_" .. os.time() .. "_" .. math.random(10000)
+  -- No async support: fall back to sync download (includes key failover).
+  if not (_mp and _mp.command_native_async) then
+    local body, code, dl_url, original_filename = M.download(sub)
+    if on_done then on_done(body, code, dl_url, original_filename) end
+    return nil
+  end
 
-  local curl_args = {
-    "curl", "-sS", "-o", tmp_zip, "-w", "%{http_code}",
-    "--connect-timeout", "10", "--max-time", "20",
-    url,
-  }
+  local function do_curl(url, key_used, is_retry)
+    local tmp_zip = "/tmp/subdl_dl_" .. os.time() .. "_" .. math.random(10000) .. ".zip"
+    local tmp_dir = "/tmp/subdl_dl_" .. os.time() .. "_" .. math.random(10000)
+    local curl_args = {
+      "curl", "-sS", "-o", tmp_zip, "-w", "%{http_code}",
+      "--connect-timeout", "10", "--max-time", "20",
+      url,
+    }
 
-  if mp.command_native_async then
-    return mp.command_native_async({
+    return _mp.command_native_async({
       name = "subprocess",
       args = curl_args,
       capture_stdout = true,
       playback_only = false,
-    }, function(ok, res)
-      local code = tonumber(res.stdout) or 0
-      local zip_info = get_utils().file_info(tmp_zip)
-      if code < 200 or code >= 300 or not zip_info or zip_info.size == 0 then
+    }, function(_ok, res)
+      local code = tonumber(res and res.stdout) or 0
+      local u = get_utils()
+      local zip_info = u and u.file_info(tmp_zip)
+
+      if code == 429 and not is_retry then
         os.remove(tmp_zip)
-        if on_done then on_done(nil, code, url) end
+        local alt = alternate_download_key(key_used)
+        if alt then
+          log("warn", "SubDL: download 429, retrying with alternate API key")
+          M.set_download_key(alt)
+          local retry_url = M.rewrite_download_api_key(url, alt)
+          do_curl(retry_url, alt, true)
+          return
+        end
+        if on_done then on_done(nil, code, url, nil) end
         return
       end
 
-      get_utils().subprocess({ args = {"mkdir", "-p", tmp_dir}, cancellable = false })
-      get_utils().subprocess({ args = {"unzip", "-o", tmp_zip, "-d", tmp_dir}, cancellable = false })
+      if code < 200 or code >= 300 or not zip_info or zip_info.size == 0 then
+        os.remove(tmp_zip)
+        if on_done then on_done(nil, code, url, nil) end
+        return
+      end
+
+      u.subprocess({ args = {"mkdir", "-p", tmp_dir}, cancellable = false })
+      u.subprocess({ args = {"unzip", "-o", tmp_zip, "-d", tmp_dir}, cancellable = false })
 
       local srt_content = nil
-      local find_res = get_utils().subprocess({
+      local orig_name = nil
+      local find_res = u.subprocess({
         args = {"find", tmp_dir, "-type", "f", "-name", "*.srt", "-o", "-name", "*.ass", "-o", "-name", "*.ssa"},
         cancellable = false,
       })
       if find_res.status == 0 and find_res.stdout and find_res.stdout ~= "" then
         local first_path = find_res.stdout:match("^([^\n]+)")
         if first_path then
+          -- Preserve the filename from inside the zip so callers can use it
+          -- for episode matching (it typically contains SxxExx).
+          orig_name = first_path:match("([^/]+)$")
           local f = io.open(first_path, "r")
           if f then
             srt_content = f:read("*a")
@@ -341,15 +601,80 @@ function M.download_async(sub, on_done)
       end
 
       os.remove(tmp_zip)
-      get_utils().subprocess({ args = {"rm", "-rf", tmp_dir}, cancellable = false })
+      u.subprocess({ args = {"rm", "-rf", tmp_dir}, cancellable = false })
 
-      if on_done then on_done(srt_content, code, url) end
+      -- Pass orig_name (4th arg) so callers write the SxxExx filename
+      if on_done then on_done(srt_content, code, url, orig_name) end
     end)
   end
 
-  local body, code, dl_url = M.download(sub)
-  if on_done then on_done(body, code, dl_url) end
-  return nil
+  -- When unpack_files is available (unpack=1 was used), prefer downloading
+  -- the individual SRT file directly — no zip extraction needed and the
+  -- file's name includes the SxxExx tag which the episode matcher needs.
+  local unpack_files = sub.unpack_files
+  if type(unpack_files) == "table" and #unpack_files > 0 then
+    local uf = unpack_files[1]
+    local uf_url = uf and uf.url
+    local uf_name = uf and uf.name
+    if uf_url and uf_url ~= "" then
+      if not uf_url:match("^https?://") then
+        uf_url = M._cfg.download_url .. uf_url
+      end
+      local key = M.get_download_key()
+      if key ~= "" then uf_url = M.rewrite_download_api_key(uf_url, key) end
+
+      log("debug", "SubDL: downloading via unpack_files URL: " .. (uf_name or "?"))
+
+      local tmp_srt = "/tmp/subdl_uf_" .. os.time() .. "_" .. math.random(10000) .. ".srt"
+      local curl_args = {
+        "curl", "-sS", "-o", tmp_srt, "-w", "%{http_code}",
+        "--connect-timeout", "10", "--max-time", "20",
+        uf_url,
+      }
+      return _mp.command_native_async({
+        name = "subprocess",
+        args = curl_args,
+        capture_stdout = true,
+        playback_only = false,
+      }, function(_ok, res)
+        local code = tonumber(res and res.stdout) or 0
+        local u = get_utils()
+        local srt_info = u and u.file_info(tmp_srt)
+
+        if code == 429 then
+          os.remove(tmp_srt)
+          local alt = alternate_download_key(key)
+          if alt then
+            log("warn", "SubDL: unpack 429, retrying with alternate key")
+            M.set_download_key(alt)
+          end
+          if on_done then on_done(nil, code, uf_url, nil) end
+          return
+        end
+
+        if code < 200 or code >= 300 or not srt_info or srt_info.size == 0 then
+          os.remove(tmp_srt)
+          log("warn", "SubDL: unpack_files direct download failed (" .. code .. "), falling back to zip")
+          -- Fall back to zip path
+          return do_curl(base_url, M.get_download_key(), false)
+        end
+
+        local srt_content = nil
+        local f = io.open(tmp_srt, "r")
+        if f then
+          srt_content = f:read("*a")
+          f:close()
+        end
+        os.remove(tmp_srt)
+
+        -- Pass the original filename so callers write SxxExx into the name
+        if on_done then on_done(srt_content, code, uf_url, uf_name) end
+      end)
+    end
+  end
+
+  local key = M.get_download_key()
+  return do_curl(base_url, key, false)
 end
 
 return M

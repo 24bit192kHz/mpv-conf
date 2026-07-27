@@ -234,3 +234,42 @@ do
   local r = match.find_matching_episode_file(files, 1, 5, nil, nil)
   H.eq("fmef exact beats pack", r, "/p/Show.S01E05.WEB.srt")
 end
+
+-- Regression: wrong season pack (S02) should not produce S03 pairs
+do
+  H.reset()
+  local sub = { release_name = "House.Of.The.Dragon.S02.1080p.Bluray.x264-BROADCAST" }
+  match.normalize_subtitle_metadata(sub)
+  H.ok("wrong-season S02 has _norm_seasons[2]", sub._norm_seasons[2] == true)
+  H.ok("wrong-season S02 has no _norm_pairs[3]", sub._norm_pairs[3] == nil)
+end
+
+-- Regression: exact episode S03E01 produces correct pair
+do
+  H.reset()
+  local sub = { release_name = "House.of.the.Dragon.S03E01.2160p.HMAX.WEB-DL.DDP5.1.Atmos.DV.HDR.H.265-FLUX" }
+  match.normalize_subtitle_metadata(sub)
+  H.ok("exact S03E01 has _norm_pairs[3][1]", sub._norm_pairs[3] and sub._norm_pairs[3][1] == true)
+  H.ok("exact S03E01 has _norm_seasons[3]", sub._norm_seasons[3] == true)
+  H.ok("exact S03E01 has _norm_eps[1]", sub._norm_eps[1] == true)
+end
+
+-- Regression: requested-season pack (S03) - release name regex cannot extract
+-- season-only from "S03.2160p" because the s/e pattern matches 2160 as episode
+-- (>MAX_EPISODE, filtered). Season comes from API fields, not release name.
+do
+  H.reset()
+  local sub = { release_name = "House.of.the.Dragon.S03.2160p.HMAX.WEB-DL", season = 3 }
+  match.normalize_subtitle_metadata(sub)
+  H.ok("season-pack S03 with API field has _norm_seasons[3]", sub._norm_seasons[3] == true)
+  H.ok("season-pack S03 has no pairs", next(sub._norm_pairs) == nil)
+end
+
+-- Regression: wrong episode S03E07 should not match S03E01
+do
+  H.reset()
+  local sub = { release_name = "House.of.the.Dragon.S03E07.1080p.HMAX.WEB-DL" }
+  match.normalize_subtitle_metadata(sub)
+  H.ok("wrong-ep S03E07 has _norm_pairs[3][7]", sub._norm_pairs[3] and sub._norm_pairs[3][7] == true)
+  H.ok("wrong-ep S03E07 has no _norm_pairs[3][1]", not (sub._norm_pairs[3] and sub._norm_pairs[3][1]))
+end

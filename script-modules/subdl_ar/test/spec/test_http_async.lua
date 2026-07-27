@@ -431,6 +431,36 @@ do
   H.ok("error result has stderr", error_result and error_result.result.stderr:find("Could not resolve host"))
 end
 
+-- =========================================================================
+-- Test 11: Header deduplication (no duplicate Authorization headers)
+-- =========================================================================
+do
+  H.reset()
+  async_calls = {}
+  pending_callbacks = {}
+  stubs_mp._async_result = {
+    status = 0,
+    stdout = '{"status":true}\n200',
+    stderr = "",
+  }
+
+  http.request_async("https://api.subdl.com/api/v2/me", {
+    api_key = "KEY123",
+    headers = { "Authorization: Bearer KEY123" },
+  }, function(success, result) end)
+  flush_callbacks()
+
+  H.ok("request_async executed", #async_calls > 0)
+  if #async_calls > 0 then
+    local args = async_calls[1].cmd.args
+    local auth_count = 0
+    for i, a in ipairs(args) do
+      if a:lower():find("authorization:") then auth_count = auth_count + 1 end
+    end
+    H.eq("Authorization header not duplicated", auth_count, 1)
+  end
+end
+
 -- ---------------------------------------------------------------------------
 -- Restore original package.loaded so other spec files aren't affected.
 -- ---------------------------------------------------------------------------

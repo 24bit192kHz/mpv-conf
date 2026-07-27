@@ -62,6 +62,8 @@ function M.normalize_subtitle_metadata(sub)
   if se and ep then
     M.add_pair_meta(pair_set, season_set, se, ep)
     M.add_episode_meta(ep_set, ep)
+  elseif se then
+    season_set[se] = true
   elseif ep then
     M.add_episode_meta(ep_set, ep)
   end

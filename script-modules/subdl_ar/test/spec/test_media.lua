@@ -85,6 +85,7 @@ H.same("dedupe nil -> {}", media.dedupe_queries(nil), {})
 
 -- extract_series_info
 H.eq_n("series S01E02", { media.extract_series_info("Breaking.Bad.S01E02.mkv") }, { "Breaking Bad", 1, 2 })
+H.eq_n("series lowercase s03e04", { media.extract_series_info("house.of.the.dragon.s03e04.dv.hdr.2160p.web.h265-cakes") }, { "house of the dragon", 3, 4 })
 H.eq_n("series 1x05", { media.extract_series_info("My.Show.1x05.WEB-DL") }, { "My Show", 1, 5 })
 H.eq_n("series daily YYYY.MM.DD", { media.extract_series_info("Daily.Show.2020.03.15.720p") }, { "Daily Show", 20, 315 })
 H.eq_n("series season pack S02", { media.extract_series_info("My.Show.S02.720p") }, { "My Show", 2, nil })

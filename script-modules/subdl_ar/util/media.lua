@@ -242,7 +242,7 @@ function M.extract_series_info(filename)
   local show_title, season, episode
 
   -- Pattern 1: S##E## (most common)
-  show_title, season, episode = clean_filename:match("^(.+)[._ ]S(%d+)E(%d+)")
+  show_title, season, episode = clean_filename:match("^(.+)[._ ]%s?[sS](%d+)[eE](%d+)")
 
   -- Pattern 2: NxN format (exclude resolutions)
   if not show_title then
@@ -258,7 +258,7 @@ function M.extract_series_info(filename)
 
   -- Pattern 3: Season-only format (S## without E##) - season pack
   if not show_title then
-    local potential_title, s = clean_filename:match("^(.+)[._ ]S(%d+)[._ )]")
+    local potential_title, s = clean_filename:match("^(.+)[._ ]%s?[sS](%d+)[._ )]")
     if potential_title and s then
       local s_num = tonumber(s)
       if s_num and s_num <= MAX_SEASON then

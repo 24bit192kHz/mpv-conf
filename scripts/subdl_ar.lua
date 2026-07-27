@@ -76,10 +76,83 @@ local has_uosc = false
 -- Magic number constants
 local EARLY_STOP_COUNT = 5
 local ANIME_EARLY_STOP_COUNT = 10
-local BATCH_SIZE = 5
+-- Download one candidate at a time. Free tier is 50 downloads/day; a batch of
+-- 5 burned quota on near-duplicate releases even when the first was fine.
+local BATCH_SIZE = 1
+-- Auto-fetch on file-loaded: only the top candidate (1 download).
+-- Manual next (Ctrl+Shift+V): up to this many sequential tries per press.
+local AUTO_MAX_DOWNLOAD_ATTEMPTS = 1
+local MANUAL_MAX_DOWNLOAD_ATTEMPTS = 3
 local GLOBAL_MODE = false
 local RESTRICTED_PATH = "/mnt/my-zfs"
 local SCRIPT_DIR = mp.get_script_directory() or "."
+local rate_limit_until = nil
+-- Soft rate-limit retries (temporary 429 with remaining quota).
+local RATE_LIMIT_SOFT_WAIT = 30
+local RATE_LIMIT_SOFT_MAX_RETRIES = 2
+-- When daily download quota is exhausted, block until reset (or this floor).
+local RATE_LIMIT_QUOTA_FLOOR = 3600
+
+-- Apply a hard download-quota block from /api/v2/me usage.
+-- Returns true if quota is exhausted (caller should stop retries).
+local function apply_download_quota_block(usage)
+    local q = subdl_provider.download_quota(usage)
+    if not q or q.remaining > 0 then return false end
+
+    local reset_ts = subdl_provider.parse_reset_at(q.reset_at)
+    local now = os.time()
+    local until_ts = now + RATE_LIMIT_QUOTA_FLOOR
+    if reset_ts and reset_ts > now then
+        until_ts = reset_ts
+    end
+    rate_limit_until = until_ts
+
+    local msg = subdl_provider.quota_exhausted_message(q)
+    mp.msg.warn("SubDL: " .. msg)
+    mp.osd_message(msg, 8)
+    return true
+end
+
+-- On HTTP 429 after provider-level key failover already tried:
+-- re-resolve a key with remaining quota; hard-stop only if both are empty.
+-- on_soft(wait_secs) for temporary limits; on_hard(reason) when giving up.
+local function handle_download_429(attempt, on_soft, on_hard)
+    -- Clear sticky download key so ensure_download_key re-evaluates both keys.
+    subdl_provider.set_download_key(nil)
+
+    subdl_provider.ensure_download_key(function(key, quota, source)
+        if key and key ~= "" then
+            mp.msg.info(string.format(
+                "SubDL: switched download key to %s (%d downloads left)",
+                source or "alternate", (quota and quota.remaining) or -1))
+            -- Soft retry with the new key (limited attempts).
+            if attempt >= RATE_LIMIT_SOFT_MAX_RETRIES then
+                rate_limit_until = os.time() + RATE_LIMIT_SOFT_WAIT
+                mp.msg.warn("SubDL: still rate limited after key switch; giving up for now")
+                mp.osd_message(string.format("SubDL rate limited. Try again in %ds.", RATE_LIMIT_SOFT_WAIT), 5)
+                if on_hard then on_hard("soft_exhausted") end
+                return
+            end
+            rate_limit_until = os.time() + 2
+            mp.osd_message("Retrying download with backup key...", 3)
+            if on_soft then on_soft(2) end
+            return
+        end
+
+        -- No key with remaining quota.
+        if quota then
+            apply_download_quota_block({ usage = { downloads = {
+                used = quota.used, limit = quota.limit, remaining = 0,
+                reset_at = quota.reset_at, period = quota.period,
+            }}})
+        else
+            rate_limit_until = os.time() + RATE_LIMIT_QUOTA_FLOOR
+            mp.msg.warn("SubDL: all API keys out of download quota (or /me unreachable)")
+            mp.osd_message("SubDL download quota exhausted on all keys.", 8)
+        end
+        if on_hard then on_hard("quota") end
+    end)
+end
 
 -- Helper: Check if script should be enabled for this file
 local function is_enabled()
@@ -168,17 +241,18 @@ local function http_get_json_async(url, opts, on_done)
         timeout = opts.timeout,
     }, function(success, result)
         current_async_handle = nil
-        if not success or not result.body then
-            if on_done then on_done(nil, 0) end
+        if not success or not result or not result.body then
+            if on_done then on_done(false, nil, result and result.http_code or 0, result and result.remaining or nil) end
             return
         end
         local json = utils.parse_json(result.body)
         if json then
-            if on_done then on_done(json, result.http_code or 0) end
+            if on_done then on_done(true, json, result.http_code or 0, result.remaining) end
         else
-            if on_done then on_done(nil, 0) end
+            if on_done then on_done(false, nil, result.http_code or 0, result.remaining) end
         end
     end)
+    return current_async_handle
 end
 
 local function http_get_raw_async(url, opts, on_done)
@@ -371,6 +445,31 @@ end
 
 local function safe_unzip(zip, dest)
     return utils.subprocess({ args = {"unzip", "-o", zip, "-d", dest}, cancellable = false })
+end
+
+-- SubDL downloads are ZIPs. The provider returns the original subtitle
+-- filename as the fourth callback value because it carries the episode tag
+-- (for example, S03E01). Keep that name when staging the body; replacing it
+-- with only the show title makes the episode matcher reject an otherwise
+-- valid subtitle.
+local function downloaded_subtitle_name(title, original_name)
+    local name = tostring(original_name or "")
+    name = name:match("([^/]+)$") or name
+    name = name:gsub("[\r\n]", "")
+    if name == "" then name = tostring(title or "subtitle") .. ".srt" end
+    if not name:match("%.[%w]+$") then name = name .. ".srt" end
+    return sanitize_filename(name)
+end
+
+local function subtitle_directory_name(title)
+    -- sanitize_filename() preserves a legacy trailing dot for extensionless
+    -- names. Directories are extensionless names, so remove that dot here.
+    return sanitize_filename(tostring(title or "subtitle")):gsub("%.$", "")
+end
+
+local function subtitle_cache_title_key(title)
+    return tostring(title or ""):gsub("_", " "):gsub("%.*$", "")
+        :gsub("%s+", " "):match("^%s*(.-)%s*$"):lower()
 end
 
 local MEDIA_CATALOG_FILES = {
@@ -663,13 +762,15 @@ local function execute_search_strategies(strategies, callbacks)
     for i, query in ipairs(queries) do
         mp.msg.info(string.format("SubDL: executing %s strategy %d/%d", log_type, i, #queries))
         local subs = fetch_subdl_api(query)
-        
+        normalize_subtitles_metadata(subs)
+
         for _, sub in ipairs(subs) do
             local sub_id = sub.id or sub.sd_id or tostring(sub)
             if sub_id and not seen_ids[sub_id] then
                 if not callbacks.filter or callbacks.filter(sub) then
                     table.insert(all_subs, sub)
                     seen_ids[sub_id] = true
+                    if callbacks.on_accept then callbacks.on_accept(sub) end
                 end
             end
         end
@@ -720,16 +821,55 @@ local function fetch_sub_list_tv(show_title, season, episode, tmdb_id)
     
     for i, q in ipairs(queries) do queries[i] = string.format("languages=ar&subs_per_page=50&%s", q) end
 
+    local exact_count = 0
+
     local subs = execute_search_strategies(queries, {
         type = "TV search",
-        filter = function(sub) 
-            return (not sub.season_number or sub.season_number == season) and (not sub.episode_number or sub.episode_number == episode) 
+        filter = function(sub)
+            local pair_set = sub._norm_pairs or {}
+            local season_set = sub._norm_seasons or {}
+            local ep_set = sub._norm_eps or {}
+            if next(pair_set) then
+                if not pair_set[season] then return false end
+            elseif next(season_set) then
+                if not season_set[season] then return false end
+            else
+                local api_sn = tonumber(sub.season_number) or tonumber(sub.season)
+                if api_sn and api_sn ~= season then return false end
+            end
+            if next(ep_set) and not ep_set[episode] then return false end
+            return true
         end,
-        should_stop = function(i, count) return count >= 5 end
+        on_accept = function(sub)
+            local pair_set = sub._norm_pairs or {}
+            if pair_set[season] and pair_set[season][episode] then
+                exact_count = exact_count + 1
+            end
+        end,
+        should_stop = function(i, count) return exact_count >= 5 end
     })
     
     if subs then
-        table.sort(subs, function(a, b) return get_quality_score((a.release_name or ""):lower()) > get_quality_score((b.release_name or ""):lower()) end)
+        table.sort(subs, function(a, b)
+            local a_pairs = a._norm_pairs or {}
+            local b_pairs = b._norm_pairs or {}
+            local a_match = a_pairs[season] and a_pairs[season][episode]
+            local b_match = b_pairs[season] and b_pairs[season][episode]
+            if a_match and not b_match then return true end
+            if not a_match and b_match then return false end
+
+            local a_season = a_pairs[season] or (a._norm_seasons or {})[season]
+            local b_season = b_pairs[season] or (b._norm_seasons or {})[season]
+            if a_season and not b_season then return true end
+            if not a_season and b_season then return false end
+
+            local a_pack = a._is_pack
+            local b_pack = b._is_pack
+            if a_pack and not b_pack then return false end
+            if not a_pack and b_pack then return true end
+
+            return get_quality_score((a.release_name or ""):lower()) > get_quality_score((b.release_name or ""):lower())
+        end)
     end
     return subs
 end
@@ -1067,6 +1207,13 @@ local function fetch_sub_list(video_name)
         return nil
     end
 
+    -- Drop duplicate download URLs so we never burn quota twice on the same zip.
+    local before = #subs_list
+    subs_list = subdl_provider.dedupe_subs(subs_list)
+    if #subs_list < before then
+        mp.msg.info(string.format("SubDL: deduped subtitle list %d → %d", before, #subs_list))
+    end
+
     subs_cache[video_name] = subs_list
     last_subs_list = subs_list
 
@@ -1087,7 +1234,7 @@ local function process_download_content(tmp_dir, title, content_type, season, ep
     
     local show_dir = string.format("%s/%s/%s%s", SUBS_DIR, 
         content_type == "movie" and "Movies" or (content_type == "anime" and "Anime" or (content_type == "tv" and "TV" or "Other")),
-        sanitize_filename(title), (content_type == "tv" or content_type == "anime") and string.format("/S%02d", season or 1) or "")
+        subtitle_directory_name(title), (content_type == "tv" or content_type == "anime") and string.format("/S%02d", season or 1) or "")
     safe_mkdir(show_dir)
 
     if content_type == "tv" or content_type == "anime" then season_files_map[title] = season_files_map[title] or {} end
@@ -1149,7 +1296,15 @@ local function download_and_load(sub, video_name, season, episode, valid_episode
         return downloaded_subs[video_name][cache_key]
     end
 
-    local function handle_download(body, code, dl_url)
+    local function handle_download(body, code, dl_url, original_name)
+        if code == 429 then
+            mp.msg.warn("SubDL: HTTP 429 rate limited in single download")
+            handle_download_429(RATE_LIMIT_SOFT_MAX_RETRIES, nil, function()
+                if on_done then on_done(nil) end
+            end)
+            return nil
+        end
+
         if not body or body == "" or not dl_url then
             mp.msg.warn("subdl_ar: empty download body for url=" .. tostring(dl_url)
                         .. " http_code=" .. tostring(code))
@@ -1167,7 +1322,7 @@ local function download_and_load(sub, video_name, season, episode, valid_episode
 
         local tmp = "/tmp/subdl_extract_" .. os.time()
         safe_mkdir(tmp)
-        local out = tmp .. "/" .. sanitize_filename(title) .. ".srt"
+        local out = tmp .. "/" .. downloaded_subtitle_name(title, original_name)
         local f = io.open(out, "w")
         if not f then safe_rm_rf(tmp); if on_done then on_done(nil) end; return nil end
         f:write(body)
@@ -1184,8 +1339,27 @@ local function download_and_load(sub, video_name, season, episode, valid_episode
         return sub_file
     end
 
-    subdl_provider.download_async(sub, function(body, code, dl_url)
-        handle_download(body, code, dl_url)
+    -- Resolve a key with remaining download quota, then fetch once.
+    subdl_provider.ensure_download_key(function(key, quota, source)
+        if not key or key == "" then
+            if quota then
+                apply_download_quota_block({ usage = { downloads = {
+                    used = quota.used, limit = quota.limit, remaining = 0,
+                    reset_at = quota.reset_at, period = quota.period,
+                }}})
+            else
+                mp.osd_message("SubDL download quota exhausted on all keys.", 6)
+            end
+            if on_done then on_done(nil) end
+            return
+        end
+        mp.msg.info(string.format(
+            "SubDL: using %s key for single download (%s remaining)",
+            source or "unknown",
+            quota and tostring(quota.remaining) or "?"))
+        subdl_provider.download_async(sub, function(body, code, dl_url, original_name)
+            handle_download(body, code, dl_url, original_name)
+        end)
     end)
     return nil
 end
@@ -1214,15 +1388,21 @@ local function fetch_bulk_subs(subs_batch, video_name, season, episode, valid_ep
         local sub = subs_batch[i]
         if not sub or type(sub) ~= "table" then
             mp.msg.warn("subdl_ar: invalid sub, skipping batch item " .. i)
-            mp.add_timeout(0, function() process_item(i + 1) end)
+            mp.add_timeout(0.5, function() process_item(i + 1) end)
             return
         end
 
-        subdl_provider.download_async(sub, function(body, code, dl_url)
+        subdl_provider.download_async(sub, function(body, code, dl_url, original_name)
+            if code == 429 then
+                mp.msg.warn("SubDL: HTTP 429 rate limited, stopping batch")
+                safe_rm_rf(tmp_base)
+                if on_done then on_done(nil, true) end
+                return
+            end
             if body and body ~= "" and dl_url then
                 local extract_dir = string.format("%s/%d", tmp_base, i)
                 safe_mkdir(extract_dir)
-                local out = extract_dir .. "/" .. sanitize_filename(title) .. ".srt"
+                local out = extract_dir .. "/" .. downloaded_subtitle_name(title, original_name)
                 local f = io.open(out, "w")
                 if f then
                     f:write(body)
@@ -1242,7 +1422,7 @@ local function fetch_bulk_subs(subs_batch, video_name, season, episode, valid_ep
                 mp.msg.warn("subdl_ar: empty download body for batch item " .. i
                             .. " http_code=" .. tostring(code))
             end
-            mp.add_timeout(0, function() process_item(i + 1) end)
+            mp.add_timeout(0.5, function() process_item(i + 1) end)
         end)
     end
 
@@ -1250,8 +1430,20 @@ local function fetch_bulk_subs(subs_batch, video_name, season, episode, valid_ep
     return nil
 end
 
-local function fetch_next_sub()
+-- opts.auto = true  → frugal auto-fetch (1 download max)
+-- opts.auto = false → manual next (up to MANUAL_MAX_DOWNLOAD_ATTEMPTS)
+local function fetch_next_sub(opts)
+    opts = opts or {}
+    local is_auto = opts.auto == true
+    local max_attempts = is_auto and AUTO_MAX_DOWNLOAD_ATTEMPTS or MANUAL_MAX_DOWNLOAD_ATTEMPTS
+
     if not is_enabled() then return end
+    if rate_limit_until and os.time() < rate_limit_until then
+        local wait = rate_limit_until - os.time()
+        mp.osd_message(string.format("Rate limited, try again in %ds", wait), math.min(wait + 1, 8))
+        return
+    end
+    rate_limit_until = nil
     local path = mp.get_property("path")
     if not path then return end
     
@@ -1284,10 +1476,27 @@ local function fetch_next_sub()
     current_index[video_name] = current_index[video_name] or 0
 
     local function try_batch(attempt)
-        if attempt > 5 then
-            mp.osd_message("Failed to load subtitles after several batches", 3)
+        if attempt > max_attempts then
+            if is_auto then
+                mp.osd_message("No matching Arabic sub yet — press Ctrl+Shift+V to try next", 4)
+            else
+                mp.osd_message("Failed to load subtitle from candidates", 3)
+            end
             return
         end
+
+        if rate_limit_until and os.time() < rate_limit_until then
+            local wait = rate_limit_until - os.time()
+            -- Quota blocks can span hours; don't schedule multi-hour auto-retries.
+            if wait > RATE_LIMIT_SOFT_WAIT + 5 then
+                mp.osd_message(string.format("Download quota exhausted, try again in %ds", wait), 6)
+                return
+            end
+            mp.osd_message(string.format("Rate limited, waiting %ds...", wait), wait + 1)
+            mp.add_timeout(wait + 1, function() try_batch(attempt) end)
+            return
+        end
+        rate_limit_until = nil
 
         local start_idx = current_index[video_name] + 1
         if start_idx > #subs_list then
@@ -1300,17 +1509,59 @@ local function fetch_next_sub()
         local end_idx = math.min(start_idx + BATCH_SIZE - 1, #subs_list)
         local batch = {}
         for i = start_idx, end_idx do table.insert(batch, subs_list[i]) end
-        current_index[video_name] = end_idx
 
-        osd_show(string.format("Downloading batch %d-%d/%d...", start_idx, end_idx, #subs_list))
-        fetch_bulk_subs(batch, video_name, season, episode, valid_episodes, valid_pairs, function(loaded)
-            osd_remove()
-            if loaded then
-                mp.osd_message("Subtitle loaded", 2)
+        local function start_download()
+            osd_show(string.format("Downloading %d/%d...", start_idx, #subs_list))
+            fetch_bulk_subs(batch, video_name, season, episode, valid_episodes, valid_pairs, function(loaded, rate_limited)
+                osd_remove()
+                if loaded then
+                    current_index[video_name] = end_idx
+                    mp.osd_message("Subtitle loaded", 2)
+                    return
+                end
+                if rate_limited then
+                    handle_download_429(attempt, function(wait)
+                        mp.add_timeout(wait + 1, function() try_batch(attempt + 1) end)
+                    end, function(_reason)
+                        -- Hard stop: do not advance index so a later manual
+                        -- retry can re-try this candidate after quota resets.
+                    end)
+                    return
+                end
+                -- Candidate downloaded but didn't match episode/title — advance
+                -- one slot only (BATCH_SIZE=1) so the next press/attempt is frugal.
+                current_index[video_name] = end_idx
+                if attempt < max_attempts then
+                    mp.osd_message("Candidate missed, trying next...", 1)
+                    mp.add_timeout(0.1, function() try_batch(attempt + 1) end)
+                else
+                    if is_auto then
+                        mp.osd_message("No matching Arabic sub yet — press Ctrl+Shift+V to try next", 4)
+                    else
+                        mp.osd_message("No matching subtitle in this try", 3)
+                    end
+                end
+            end)
+        end
+
+        -- Pick a key that still has download quota before spending one.
+        subdl_provider.ensure_download_key(function(key, quota, source)
+            if not key or key == "" then
+                if quota then
+                    apply_download_quota_block({ usage = { downloads = {
+                        used = quota.used, limit = quota.limit, remaining = 0,
+                        reset_at = quota.reset_at, period = quota.period,
+                    }}})
+                else
+                    mp.osd_message("SubDL download quota exhausted on all keys.", 6)
+                end
                 return
             end
-            mp.osd_message("Batch failed, trying next...", 1)
-            mp.add_timeout(0.1, function() try_batch(attempt + 1) end)
+            mp.msg.info(string.format(
+                "SubDL: using %s key for download (%s remaining)",
+                source or "unknown",
+                quota and tostring(quota.remaining) or "?"))
+            start_download()
         end)
     end
 
@@ -1358,7 +1609,7 @@ local function scan_local_files_for_episode(show_title, season, episode, content
     local type_dir = content_type == "anime" and "Anime" or (content_type == "tv" and "TV" or nil)
     if not type_dir then return nil end
     
-    local search_dir = string.format("%s/%s/%s/S%02d", SUBS_DIR, type_dir, show_title:gsub("[^%w%s%-]", ""):gsub("%s+", "_"), season or 1)
+    local search_dir = string.format("%s/%s/%s/S%02d", SUBS_DIR, type_dir, subtitle_directory_name(show_title), season or 1)
     if not utils.file_info(search_dir) then return nil end
     
     local files = safe_find_subs(search_dir)
@@ -1386,9 +1637,36 @@ local function scan_local_files_for_episode(show_title, season, episode, content
 end
 
 local function check_existing_season_files(show_title, season, episode)
-    if show_title and season and episode and season_files_map[show_title] and season_files_map[show_title][season] then
-        local target_file = season_files_map[show_title][season][episode]
+    if show_title and season and episode then
+        local cached_seasons = season_files_map[show_title]
+        if not cached_seasons then
+            local wanted = subtitle_cache_title_key(show_title)
+            for cached_title, seasons in pairs(season_files_map) do
+                if subtitle_cache_title_key(cached_title) == wanted then
+                    cached_seasons = seasons
+                    season_files_map[show_title] = seasons
+                    break
+                end
+            end
+        end
+        if not cached_seasons or not cached_seasons[season] then return false end
+
+        local target_file = cached_seasons[season][episode]
         if target_file and utils.file_info(target_file) then
+            -- Validate persisted/indexed entries before loading them. A stale
+            -- cache entry with a generic or unrelated filename must not win
+            -- merely because its table key happens to be SxxExx.
+            local valid_episodes = {[tonumber(episode)] = true}
+            local valid_pairs = {[tonumber(season)] = {[tonumber(episode)] = true}}
+            local matched = find_matching_episode_file(
+                {target_file}, season, episode, valid_episodes, valid_pairs)
+            if not matched then
+                mp.msg.warn(string.format(
+                    "SubDL: ignoring stale cached subtitle for %s S%02dE%02d: %s",
+                    show_title, season, episode, target_file))
+                cached_seasons[season][episode] = nil
+                return false
+            end
             mp.msg.info(string.format("SubDL: Found cached %s S%02dE%02d: %s", show_title, season, episode, target_file))
             mp.commandv("sub-add", target_file)
             return true
@@ -1428,13 +1706,13 @@ local function enhanced_auto_fetch_if_needed()
     local video_name = basename(path)
     local media = resolve_media_info(path, video_name)
     
-    -- First, check if this exact file already has a cached subtitle
-    if check_existing_subtitle_for_file(media.filename) then
-        mp.osd_message("Loaded cached subtitle", 2)
-        return
-    end
-    
-    if media.content_type == "anime" and media.title and media.episode then
+    -- Check cached files based on media content_type
+    if media.content_type == "movie" then
+        if check_existing_subtitle_for_file(media.filename) then
+            mp.osd_message("Loaded cached subtitle", 2)
+            return
+        end
+    elseif media.content_type == "anime" and media.title and media.episode then
         local season = media.season or 1
         if check_existing_season_files(media.title, season, media.episode) then mp.osd_message("Loaded cached subtitle", 2); return end
         local local_file = scan_local_files_for_episode(media.title, season, media.episode, "anime")
@@ -1447,7 +1725,8 @@ local function enhanced_auto_fetch_if_needed()
     
     if not has_arabic_sub() then
         osd_show("Searching for Arabic subtitles...")
-        fetch_next_sub()
+        -- Auto path: top candidate only (1 download). Manual next for more.
+        fetch_next_sub({ auto = true })
     end
 end
 
@@ -1555,7 +1834,7 @@ local function index_local_files()
                     
                     if ep then
                         -- Normalize show name back from filesystem format
-                        local show_normalized = show:gsub("_", " ")
+                        local show_normalized = show:gsub("_", " "):gsub("%.$", "")
                         season_files_map[show_normalized] = season_files_map[show_normalized] or {}
                         season_files_map[show_normalized][season] = season_files_map[show_normalized][season] or {}
                         if not season_files_map[show_normalized][season][ep] then
@@ -1603,6 +1882,11 @@ end
 
 local function subdl_ar_pick()
     if not is_enabled() then return end
+    if rate_limit_until and os.time() < rate_limit_until then
+        local wait = rate_limit_until - os.time()
+        mp.osd_message(string.format("Rate limited, try again in %ds", wait), wait + 1)
+        return
+    end
     local path = mp.get_property("path")
     if not path then return end
 
@@ -1628,6 +1912,11 @@ end
 -- Handle manual search query
 local function handle_manual_search(query)
     if not is_enabled() then return end
+    if rate_limit_until and os.time() < rate_limit_until then
+        local wait = rate_limit_until - os.time()
+        mp.osd_message(string.format("Rate limited, try again in %ds", wait), wait + 1)
+        return
+    end
     if not query or query == "" then
         mp.osd_message("No search query provided", 2)
         return
@@ -1692,13 +1981,20 @@ load_media_catalog()
 mp.register_event("file-loaded", enhanced_auto_fetch_if_needed)
 mp.register_event("end-file", abort_inflight)
 mp.register_event("shutdown", function() cache_mod.force_save() end)
-mp.add_key_binding("Ctrl+Shift+V", "subdl_ar_next", fetch_next_sub)
+mp.add_key_binding("Ctrl+Shift+V", "subdl_ar_next", function()
+    fetch_next_sub({ auto = false })
+end)
 mp.add_key_binding("Ctrl+V", "subdl_ar_toggle_deep", toggle_deep_search)
 mp.add_key_binding("Alt+V", "subdl_ar_search", manual_search)
 mp.add_key_binding("Ctrl+Alt+v", "subdl_ar_pick", subdl_ar_pick)
 mp.add_key_binding("ctrl+alt+v", "subdl_ar_pick_lower", subdl_ar_pick)
 mp.register_script_message("subdl_ar_search", handle_manual_search)
 mp.register_script_message("subdl_ar_download_item", function(index)
+    if rate_limit_until and os.time() < rate_limit_until then
+        local wait = rate_limit_until - os.time()
+        mp.osd_message(string.format("Rate limited, try again in %ds", wait), wait + 1)
+        return
+    end
     local path = mp.get_property("path")
     if not path then return end
     local video_name = basename(path)

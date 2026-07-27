@@ -33,12 +33,18 @@ local function build_curl_args(url, api_key, extra_headers, timeout)
     "curl", "-sS", "-D", "-",
     "--connect-timeout", tostring(CURL_TIMEOUT),
     "--max-time", tostring(timeout or CURL_TIMEOUT * 2),
-    "-H", "Authorization: Bearer " .. api_key,
   }
+  if api_key and api_key ~= "" then
+    table.insert(args, "-H")
+    table.insert(args, "Authorization: Bearer " .. api_key)
+  end
   if extra_headers then
     for _, h in ipairs(extra_headers) do
-      table.insert(args, "-H")
-      table.insert(args, h)
+      local is_auth = api_key and api_key ~= "" and h:lower():match("^authorization:") ~= nil
+      if not is_auth then
+        table.insert(args, "-H")
+        table.insert(args, h)
+      end
     end
   end
   table.insert(args, url)

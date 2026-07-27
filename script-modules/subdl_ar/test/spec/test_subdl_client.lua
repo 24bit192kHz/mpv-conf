@@ -266,3 +266,64 @@ local url_util = require "subdl_ar.util.url"
 H.eq("redact_url still redacts api_key (defensive)",
      url_util.redact_url("https://dl.subdl.com/subtitle/123.zip?api_key=SECRET&foo=bar"),
      "https://dl.subdl.com/subtitle/123.zip?api_key=<redacted>&foo=bar")
+
+---------------------------------------------------------------------------
+-- download_quota / quota_exhausted_message / parse_reset_at
+---------------------------------------------------------------------------
+do
+  local q = provider.download_quota({
+    usage = {
+      downloads = {
+        used = 50, limit = 50, remaining = 0,
+        reset_at = "2026-07-26T00:00:00.000Z", period = "day",
+      },
+    },
+  })
+  H.ok("download_quota parses remaining=0", q and q.remaining == 0)
+  H.eq("download_quota used", q.used, 50)
+  H.eq("download_quota limit", q.limit, 50)
+  H.eq("download_quota reset_at", q.reset_at, "2026-07-26T00:00:00.000Z")
+
+  local msg = provider.quota_exhausted_message(q)
+  H.ok("quota message includes 50/50", msg:find("50/50", 1, true) ~= nil)
+  H.ok("quota message includes Resets", msg:find("Resets", 1, true) ~= nil)
+  H.ok("quota message includes UTC", msg:find("UTC", 1, true) ~= nil)
+
+  local ts = provider.parse_reset_at("2026-07-26T00:00:00.000Z")
+  H.ok("parse_reset_at returns number", type(ts) == "number" and ts > 0)
+  H.eq("parse_reset_at nil on garbage", provider.parse_reset_at("nope"), nil)
+  H.eq("download_quota nil on missing", provider.download_quota({}), nil)
+  H.eq("download_quota nil on nil", provider.download_quota(nil), nil)
+
+  local q_ok = provider.download_quota({
+    usage = { downloads = { used = 3, limit = 50, remaining = 47 } },
+  })
+  H.ok("download_quota remaining>0", q_ok and q_ok.remaining == 47)
+end
+
+---------------------------------------------------------------------------
+-- get_usage_async hits /api/v2/me with Bearer auth
+---------------------------------------------------------------------------
+do
+  H.reset()
+  captured = {}
+  local done_usage, done_code = nil, nil
+  -- Sync fallback path (no get_json_async configured above uses http_get_json).
+  provider.get_usage_async(function(usage, code)
+    done_usage, done_code = usage, code
+  end)
+  local me_call = nil
+  for _, c in ipairs(captured) do
+    if c.kind == "json" and c.url and c.url:find("/api/v2/me", 1, true) then
+      me_call = c
+      break
+    end
+  end
+  H.ok("get_usage_async calls /api/v2/me", me_call ~= nil)
+  if me_call then
+    H.ok("get_usage_async has Bearer header",
+         contains(me_call.headers, "Authorization: Bearer TESTKEY_PRIMARY"))
+    H.ok("get_usage_async URL has no api_key=",
+         me_call.url:find("api_key=", 1, true) == nil)
+  end
+end
