@@ -37,9 +37,11 @@ local config = {
     -- Automatically sync a newly loaded external subtitle (no keypress).
     auto_sync_on_load = true,
     -- On-load: when no show transform is cached yet, establish the reliable
-    -- one via audio (then every later episode applies it instantly). Guarded
-    -- by auto_sync_audio + audio_is_cheap so a long lossless 4K track (a
-    -- multi-minute decode) doesn't get auto-audio'd.
+    -- one. The audio VAD path is only reached when the file has no embedded
+    -- text sub (PGS / image-based) -- for text-subbed remuxes sync_subtitles
+    -- feeds ffsubsync the cached embedded sub instead (sub-to-sub, instant).
+    -- Guarded by auto_sync_audio + audio_is_cheap so a long lossless 4K track
+    -- (a multi-minute decode) doesn't get auto-VAD'd when it does run.
     auto_sync_audio = true,
     -- On-load: skip auto-sync if the best embedded sub has fewer cues than
     -- this (a signs/songs track is too sparse to be a reliable reference).
@@ -308,25 +310,42 @@ local function sync_subtitles(ref_sub_path, force_engine)
         local ref = reference_file_path
         local extra = {}
         if not ref_sub_path then
-            -- Audio reference. Decoding the audio is the expensive part (it
-            -- scales with audio weight/duration), so cache the extracted speech
-            -- as a .npz (ffsubsync --serialize-speech). Later syncs pass the
-            -- .npz as the reference and ffsubsync loads it directly (instant,
-            -- no audio decode). The .npz lives in the per-video cache dir, keyed
-            -- by path+size+mtime; a symlink keeps ffsubsync from writing into
-            -- the media folder.
+            -- No explicit reference: pick the cheapest one that still yields a
+            -- global transform. ffsubsync's mode is set by the reference's
+            -- file extension -- feed it a .mkv and it does full audio VAD over
+            -- the whole file (21s on a 24-min 6ch FLAC remux). Feed it the
+            -- embedded text sub (already extracted/cached at video_ref_dir)
+            -- and it does sub-to-sub matching instead -- instant, no audio
+            -- decode, no VAD. The show transform (offset+scale) is just as
+            -- usable and still clamped to 0.90-1.10 in save_show_transform,
+            -- so a sparse/wrong ref can't poison the cache.
+            --
+            -- Only fall through to raw audio VAD when there's no embedded
+            -- text sub (PGS-only / image-based subs). Bound it with
+            -- --max-duration-seconds so a stray 4K TrueHD can't trigger a
+            -- multi-minute decode -- 10 min is enough for ffsubsync to lock on.
             local dir = video_ref_dir()
             subprocess({ "mkdir", "-p", dir })
-            local npz = dir .. "/video.npz"
-            if utils.file_info(npz) then
-                ref = npz
+
+            local _, active = get_active_track('sub')
+            local refs = get_embedded_refs(active and active.id or nil)
+            local best = pick_best_embedded_ref(refs)
+            if best then
+                ref = best.path
             else
-                local link = dir .. "/video.mkv"
-                subprocess({ "ln", "-sf", reference_file_path, link })
-                ref = link
-                table.insert(extra, "--serialize-speech")
-                table.insert(extra, "--reference-stream")
-                table.insert(extra, "0:" .. get_active_track('audio'))
+                local npz = dir .. "/video.npz"
+                if utils.file_info(npz) then
+                    ref = npz
+                else
+                    local link = dir .. "/video.mkv"
+                    subprocess({ "ln", "-sf", reference_file_path, link })
+                    ref = link
+                    table.insert(extra, "--serialize-speech")
+                    table.insert(extra, "--reference-stream")
+                    table.insert(extra, "0:" .. get_active_track('audio'))
+                    table.insert(extra, "--max-duration-seconds")
+                    table.insert(extra, "600")
+                end
             end
         end
         local args = { config.ffsubsync_path, ref, "-i", subtitle_path, "-o", retimed_subtitle_path }
@@ -504,17 +523,15 @@ local function get_embedded_refs(exclude_id)
     return list
 end
 
--- Fast subtitle<->subtitle sync to the best (most-cues) embedded sub. Returns
--- true on a completed sync. If gate_min_cues is set, a too-sparse reference
--- (signs/songs) is rejected (returns false) so the caller can fall back.
-local function sync_to_best_embedded(gate_min_cues, exclude_id)
-    local _, active = get_active_track('sub')
-    if active == nil then return false end
-    local refs = get_embedded_refs(exclude_id or active.id)
-    if #refs == 0 then return false end
-    -- Prefer an English reference (the usual full-dialogue sub) over other
-    -- languages: picking by raw cue count alone can choose e.g. a Chinese
-    -- track, which aligns Arabic to the wrong language's timing.
+-- Pick the best reference out of an embedded-subs manifest. Prefers an
+-- English track (the usual full-dialogue sub) over other languages -- picking
+-- by raw cue count alone can choose e.g. a Chinese track, which aligns Arabic
+-- to the wrong language's timing. Shared between the altsub path and the
+-- ffsubsync-on-embedded-sub fallback (so ffsubsync can do sub-to-sub matching
+-- instead of full audio VAD on the .mkv -- the difference is ~20s of decode
+-- vs sub-second).
+local function pick_best_embedded_ref(refs)
+    if not refs or #refs == 0 then return nil end
     local best = nil
     for _, r in ipairs(refs) do
         if (r.lang or ""):lower():sub(1, 2) == "en" then
@@ -527,6 +544,18 @@ local function sync_to_best_embedded(gate_min_cues, exclude_id)
             if r.cues > best.cues then best = r end
         end
     end
+    return best
+end
+
+-- Fast subtitle<->subtitle sync to the best (most-cues) embedded sub. Returns
+-- true on a completed sync. If gate_min_cues is set, a too-sparse reference
+-- (signs/songs) is rejected (returns false) so the caller can fall back.
+local function sync_to_best_embedded(gate_min_cues, exclude_id)
+    local _, active = get_active_track('sub')
+    if active == nil then return false end
+    local refs = get_embedded_refs(exclude_id or active.id)
+    local best = pick_best_embedded_ref(refs)
+    if not best then return false end
     if gate_min_cues and best.cues < gate_min_cues then
         notify(string.format("Embedded sub too sparse to auto-sync (%d cues); press n for audio.", best.cues), "info", 4)
         return false
@@ -555,9 +584,15 @@ end
 
 local function sec_to_ass_time(x)
     if x < 0 then x = 0 end
+    -- ASS time is H:MM:SS.cc (centiseconds). The minutes denominator is
+    -- 6000 cs/min, not 60000 -- with 60000 the m field was always 0 once
+    -- h and s were extracted, leaking 0..599 into the s field and producing
+    -- invalid timestamps like "0:00:62.09" for any sub cue that crossed the
+    -- 60s mark after a +offset shift. (SRT below uses 60000 because its
+    -- input unit is ms, not cs -- the math is right, just different.)
     local cs = math.floor(x * 100 + 0.5)
     local h = math.floor(cs / 360000); cs = cs % 360000
-    local m = math.floor(cs / 60000); cs = cs % 60000
+    local m = math.floor(cs / 6000); cs = cs % 6000
     local s = math.floor(cs / 100); cs = cs % 100
     return string.format("%d:%02d:%02d.%02d", h, m, s, cs)
 end
@@ -684,10 +719,13 @@ end
 
 -- On-load auto sync:
 --   1. cached show transform present -> apply it (milliseconds, no file access);
---   2. else, if audio-seed is allowed and the audio is cheap -> audio sync once
---      (ffsubsync caches the reliable per-show transform; every later episode
---      of the show hits step 1);
---   3. else -> fast per-episode embedded-subtitle sync (alass, no caching).
+--   2. else -> ffsubsync on the best embedded text sub (sub-to-sub, instant;
+--      caches the per-show transform; every later episode of the show hits
+--      step 1). Falls through to audio VAD only when the file has no embedded
+--      text sub (PGS / image-based).
+--   3. else (PGS-only) -> ffsubsync on cached or bounded audio VAD (first run
+--      is the slow one, every later run on the same file is instant via .npz;
+--      --max-duration-seconds caps the first decode at 10 min).
 local synced_paths = {}
 local auto_timer = nil
 local function auto_sync_on_load()
