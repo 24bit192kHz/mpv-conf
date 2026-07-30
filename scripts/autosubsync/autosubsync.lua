@@ -310,27 +310,25 @@ local function sync_subtitles(ref_sub_path, force_engine)
         local ref = reference_file_path
         local extra = {}
         if not ref_sub_path then
-            -- No explicit reference: pick the cheapest one that still yields a
-            -- global transform. ffsubsync's mode is set by the reference's
-            -- file extension -- feed it a .mkv and it does full audio VAD over
-            -- the whole file (21s on a 24-min 6ch FLAC remux). Feed it the
-            -- embedded text sub (already extracted/cached at video_ref_dir)
-            -- and it does sub-to-sub matching instead -- instant, no audio
-            -- decode, no VAD. The show transform (offset+scale) is just as
-            -- usable and still clamped to 0.90-1.10 in save_show_transform,
-            -- so a sparse/wrong ref can't poison the cache.
-            --
-            -- Only fall through to raw audio VAD when there's no embedded
-            -- text sub (PGS-only / image-based subs). Bound it with
-            -- --max-duration-seconds so a stray 4K TrueHD can't trigger a
-            -- multi-minute decode -- 10 min is enough for ffsubsync to lock on.
+            -- No explicit reference: prefer audio VAD (reliable, sparse-ref
+            -- safe) but skip the slow first-time decode when a *dense*
+            -- embedded text sub is already extracted. A sparse ref (e.g. a
+            -- signs/songs-only track with < 500 cues) gives a noisy offset
+            -- that overwrites a perfectly good audio-VAD cache, so we gate
+            -- on cue count. Falls through to audio VAD -- cached as .npz
+            -- per-video, so only the first sync is slow.
             local dir = video_ref_dir()
             subprocess({ "mkdir", "-p", dir })
 
             local _, active = get_active_track('sub')
             local refs = get_embedded_refs(active and active.id or nil)
             local best = pick_best_embedded_ref(refs)
-            if best then
+            -- A reasonably full embedded dialog track; below this, sub-to-sub
+            -- alignment is unreliable (Lain's signs sub gave 1.18 scale that
+            -- had to be clamped to 1.0 -- still poisoned the per-episode
+            -- offset).
+            local DENSE_REF_CUES = 500
+            if best and best.cues >= DENSE_REF_CUES then
                 ref = best.path
             else
                 local npz = dir .. "/video.npz"
@@ -676,6 +674,7 @@ local function apply_cached_transform()
         mp.set_property("sub-delay", 0)
         if config.unload_old_sub then mp.commandv("sub_remove", old_sid) end
         notify("Subtitle synchronized (cached).", nil, 2)
+        just_applied_cache = true
         return true
     end
     return false
@@ -728,7 +727,17 @@ end
 --      --max-duration-seconds caps the first decode at 10 min).
 local synced_paths = {}
 local auto_timer = nil
+-- Set by apply_cached_transform when it succeeds. A late-firing timer (set
+-- before the cache was applied) must NOT then run sync_to_best_embedded and
+-- have alass compound another offset on top of the cached retimed -- we
+-- already wrote and loaded the correct retimed, doing it again is always
+-- wrong.
+local just_applied_cache = false
 local function auto_sync_on_load()
+    if just_applied_cache then
+        just_applied_cache = false
+        return
+    end
     if apply_cached_transform() then
         return
     end
