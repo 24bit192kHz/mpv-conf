@@ -12,6 +12,12 @@ local h = require('helpers')
 local ref_selector
 local engine_selector
 local track_selector
+-- Forward declarations: sync_subtitles (line ~275) references these but
+-- their `local function` definitions come later. Without these, the
+-- compiler treats the references as global and the call fails at runtime
+-- with "attempt to call global 'get_embedded_refs' (a nil value)".
+local get_embedded_refs
+local pick_best_embedded_ref
 
 -- Config
 -- Options can be changed here or in a separate config file.
@@ -512,7 +518,7 @@ local function extract_all_refs(dir, exclude_id)
 end
 
 -- Cached list of embedded reference subs: {id, lang, codec, file, cues, path}.
-local function get_embedded_refs(exclude_id)
+get_embedded_refs = function(exclude_id)
     local dir = video_ref_dir()
     local list = read_ref_manifest(dir) or extract_all_refs(dir, exclude_id)
     for _, r in ipairs(list) do
@@ -528,7 +534,7 @@ end
 -- ffsubsync-on-embedded-sub fallback (so ffsubsync can do sub-to-sub matching
 -- instead of full audio VAD on the .mkv -- the difference is ~20s of decode
 -- vs sub-second).
-local function pick_best_embedded_ref(refs)
+pick_best_embedded_ref = function(refs)
     if not refs or #refs == 0 then return nil end
     local best = nil
     for _, r in ipairs(refs) do
