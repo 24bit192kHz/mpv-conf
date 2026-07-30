@@ -270,7 +270,9 @@ function M.find_matching_episode_file(sub_files, season, episode, valid_episodes
 
   for _, sub_file in ipairs(sub_files) do
     local filename = sub_file:match("([^/]+)$")
-    local filename_lower = filename:lower()
+    -- Normalize away revision tags ("01v2" -> "01") so the episode number
+    -- survives; parsing runs on this copy, display keeps the original name.
+    local filename_lower = filename:lower():gsub("(%d)v%d+", "%1")
 
     local score = 0
     local ep_candidates = {}
@@ -291,6 +293,19 @@ function M.find_matching_episode_file(sub_files, season, episode, valid_episodes
     end
 
     for ep_str in filename_lower:gmatch("[eE][pP][._ %-]*(%d+)") do
+      local ep = tonumber(ep_str)
+      if ep and ep > 0 and ep <= MAX_EPISODE then table.insert(ep_candidates, ep) end
+    end
+
+    -- Bare episode tag without season prefix or "p" ("Deadman Wonderland E01",
+    -- " - e01"). Require a non-letter (or string start) before the "e" so word
+    -- internals like "size1080" never contribute. Lua patterns have no
+    -- alternation, so string-start and mid-string are matched separately.
+    for ep_str in filename_lower:gmatch("^e(%d+)") do
+      local ep = tonumber(ep_str)
+      if ep and ep > 0 and ep <= MAX_EPISODE then table.insert(ep_candidates, ep) end
+    end
+    for ep_str in filename_lower:gmatch("[^a-z]e(%d+)") do
       local ep = tonumber(ep_str)
       if ep and ep > 0 and ep <= MAX_EPISODE then table.insert(ep_candidates, ep) end
     end
@@ -448,6 +463,54 @@ function M.find_matching_episode_file(sub_files, season, episode, valid_episodes
     mp.msg.warn(string.format("SubDL: ⚠️ No match for E%02d in this pack, trying next...", episode))
     return nil
   end
+end
+
+-- expand_unpack_files(subs) -> subs
+-- Search with unpack=1 returns season packs as one entry carrying unpack_files[]
+-- (per-file url/season/episode/language). Downloading such a pack blindly takes
+-- unpack_files[1], which is rarely the target episode. Expand each pack into
+-- one synthetic child entry per unpack file so the normal filter/rank/download
+-- pipeline selects the exact episode file. The parent entry is dropped when at
+-- least one child carries a usable download url; otherwise it is kept as a
+-- zip-fallback.
+function M.expand_unpack_files(subs)
+  local out = {}
+  for _, sub in ipairs(subs or {}) do
+    local ufs = sub.unpack_files
+    if type(ufs) ~= "table" or #ufs == 0 then
+      table.insert(out, sub)
+    else
+      local parent_id = sub.id or sub.sd_id or "?"
+      local usable = 0
+      for idx, uf in ipairs(ufs) do
+        if type(uf) == "table" and uf.url and uf.url ~= "" then
+          usable = usable + 1
+          local name = uf.name or sub.release_name or ""
+          name = name:match("([^/]+)$") or name
+          local child = {
+            url = uf.url,
+            download_url = uf.url,
+            release_name = name ~= "" and name or sub.release_name,
+            season_number = uf.season or uf.season_number or sub.season_number,
+            episode_number = uf.episode or uf.episode_number or sub.episode_number,
+            episode_end = uf.episode_end,
+            language = uf.language or sub.language,
+            full_season = false,
+            id = tostring(parent_id) .. "#" .. idx,
+            _parent_id = parent_id,
+            _is_pack = false,
+          }
+          M.normalize_subtitle_metadata(child)
+          table.insert(out, child)
+        end
+      end
+      if usable == 0 then
+        -- No direct per-file URLs: keep the parent so the zip path can run.
+        table.insert(out, sub)
+      end
+    end
+  end
+  return out
 end
 
 return M

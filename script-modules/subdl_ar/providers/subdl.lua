@@ -391,9 +391,37 @@ function M.parse_reset_at(reset_at)
   })
 end
 
--- Internal: curl a zip URL, unzip, return first subtitle body and its name.
--- Returns body, http_code, url_used, original_filename.
-local function download_url_to_srt(url)
+-- SubDL occasionally answers HTTP 200 with a non-zip body (a transient error
+-- page, or a key it rejects). A real subtitle zip starts with the PK magic;
+-- checking it lets us detect that case and retry instead of feeding garbage
+-- to unzip ("End-of-central-directory signature not found").
+local function is_zip_file(path)
+  local f = io.open(path, "rb")
+  if not f then return false end
+  local magic = f:read(4)
+  f:close()
+  return magic == "PK\3\4" or magic == "PK\5\6"
+end
+
+-- One-line description of a downloaded file for failure diagnostics:
+-- http code, size, and the first bytes (so we can tell an HTML/JSON error
+-- page from a truncated zip without dumping the body).
+local function describe_download(path, code)
+  local u = get_utils()
+  local info = u and u.file_info(path)
+  local head = ""
+  local f = io.open(path, "rb")
+  if f then
+    head = (f:read(32) or ""):gsub("[^\32-\126]", ".")
+    f:close()
+  end
+  return string.format("http=%s size=%s head=%q", tostring(code),
+          tostring(info and info.size or -1), head)
+end
+
+-- Internal: curl a subtitle URL (zip OR raw subtitle file), return the first
+-- subtitle body and its name. Returns body, http_code, url_used, original_filename.
+local function download_url_to_srt(url, fallback_name)
   if not url then return nil, 0, nil end
 
   local tmp_zip = "/tmp/subdl_dl_" .. os.time() .. "_" .. math.random(10000) .. ".zip"
@@ -417,11 +445,26 @@ local function download_url_to_srt(url)
     return nil, code, url
   end
 
+  local srt_content = nil
+  local original_filename = nil
+
+  if not is_zip_file(tmp_zip) then
+    -- SubDL served the subtitle file directly (expanded unpack_files child URL).
+    local f = io.open(tmp_zip, "r")
+    local body = f and f:read("*a")
+    if f then f:close() end
+    if body and (body:find("-->", 1, true) or body:find("Dialogue:", 1, true)
+            or body:find("[Script", 1, true) or body:find("{\\", 1, true)) then
+      srt_content = body
+      original_filename = fallback_name
+    end
+    os.remove(tmp_zip)
+    return srt_content, code, url, original_filename
+  end
+
   u.subprocess({ args = {"mkdir", "-p", tmp_dir}, cancellable = false })
   u.subprocess({ args = {"unzip", "-o", tmp_zip, "-d", tmp_dir}, cancellable = false })
 
-  local srt_content = nil
-  local original_filename = nil
   local find_res = u.subprocess({
     args = {"find", tmp_dir, "-type", "f", "-name", "*.srt", "-o", "-name", "*.ass", "-o", "-name", "*.ssa"},
     cancellable = false,
@@ -462,14 +505,15 @@ function M.download(sub)
   local url = M.api_download_url(sub)
   if not url then return nil, 0, nil end
 
-  local body, code, used_url, original_filename = download_url_to_srt(url)
-  if code == 429 then
+  local body, code, used_url, original_filename = download_url_to_srt(url, sub.release_name)
+  -- Retry once with the alternate key on any failure (429, empty, error page).
+  if not body then
     local alt = alternate_download_key(M.get_download_key())
     if alt then
-      log("warn", "SubDL: download 429, retrying with alternate API key")
+      log("warn", string.format("SubDL: download failed (http %s), retrying with alternate API key", tostring(code)))
       M.set_download_key(alt)
       local retry_url = M.rewrite_download_api_key(url, alt)
-      body, code, used_url, original_filename = download_url_to_srt(retry_url)
+      body, code, used_url, original_filename = download_url_to_srt(retry_url, sub.release_name)
     end
   end
   return body, code, used_url, original_filename
@@ -538,7 +582,7 @@ function M.download_async(sub, on_done)
     return nil
   end
 
-  local function do_curl(url, key_used, is_retry)
+  local function do_curl(url, key_used, is_retry, fallback_name)
     local tmp_zip = "/tmp/subdl_dl_" .. os.time() .. "_" .. math.random(10000) .. ".zip"
     local tmp_dir = "/tmp/subdl_dl_" .. os.time() .. "_" .. math.random(10000)
     local curl_args = {
@@ -563,8 +607,7 @@ function M.download_async(sub, on_done)
         if alt then
           log("warn", "SubDL: download 429, retrying with alternate API key")
           M.set_download_key(alt)
-          local retry_url = M.rewrite_download_api_key(url, alt)
-          do_curl(retry_url, alt, true)
+          do_curl(M.rewrite_download_api_key(url, alt), alt, true, fallback_name)
           return
         end
         if on_done then on_done(nil, code, url, nil) end
@@ -572,37 +615,55 @@ function M.download_async(sub, on_done)
       end
 
       if code < 200 or code >= 300 or not zip_info or zip_info.size == 0 then
+        log("warn", "SubDL: download unusable (" .. describe_download(tmp_zip, code) .. ")")
         os.remove(tmp_zip)
         if on_done then on_done(nil, code, url, nil) end
         return
       end
 
-      u.subprocess({ args = {"mkdir", "-p", tmp_dir}, cancellable = false })
-      u.subprocess({ args = {"unzip", "-o", tmp_zip, "-d", tmp_dir}, cancellable = false })
+      local srt_content, orig_name
 
-      local srt_content = nil
-      local orig_name = nil
-      local find_res = u.subprocess({
-        args = {"find", tmp_dir, "-type", "f", "-name", "*.srt", "-o", "-name", "*.ass", "-o", "-name", "*.ssa"},
-        cancellable = false,
-      })
-      if find_res.status == 0 and find_res.stdout and find_res.stdout ~= "" then
-        local first_path = find_res.stdout:match("^([^\n]+)")
-        if first_path then
-          -- Preserve the filename from inside the zip so callers can use it
-          -- for episode matching (it typically contains SxxExx).
-          orig_name = first_path:match("([^/]+)$")
-          local f = io.open(first_path, "r")
-          if f then
-            srt_content = f:read("*a")
-            f:close()
+      if is_zip_file(tmp_zip) then
+        -- ZIP archive: unzip and take the first subtitle inside.
+        u.subprocess({ args = {"mkdir", "-p", tmp_dir}, cancellable = false })
+        u.subprocess({ args = {"unzip", "-o", tmp_zip, "-d", tmp_dir}, cancellable = false })
+        local find_res = u.subprocess({
+          args = {"find", tmp_dir, "-type", "f", "-name", "*.srt", "-o", "-name", "*.ass", "-o", "-name", "*.ssa"},
+          cancellable = false,
+        })
+        if find_res.status == 0 and find_res.stdout and find_res.stdout ~= "" then
+          local first_path = find_res.stdout:match("^([^\n]+)")
+          if first_path then
+            -- Preserve the filename from inside the zip so callers can use it
+            -- for episode matching (it typically contains SxxExx).
+            orig_name = first_path:match("([^/]+)$")
+            local f = io.open(first_path, "r")
+            if f then srt_content = f:read("*a"); f:close() end
           end
+        end
+        u.subprocess({ args = {"rm", "-rf", tmp_dir}, cancellable = false })
+      else
+        -- Not a zip: SubDL served the subtitle file directly. This is what an
+        -- expanded unpack_files child URL (match.expand_unpack_files) returns.
+        -- Accept it only if it actually looks like subtitle text (not an
+        -- HTML/JSON error page); the filename comes from the search result.
+        local f = io.open(tmp_zip, "r")
+        local body = f and f:read("*a")
+        if f then f:close() end
+        if body and (body:find("-->", 1, true) or body:find("Dialogue:", 1, true)
+                or body:find("[Script", 1, true) or body:find("{\\", 1, true)) then
+          srt_content = body
+          orig_name = fallback_name
         end
       end
 
       os.remove(tmp_zip)
-      u.subprocess({ args = {"rm", "-rf", tmp_dir}, cancellable = false })
 
+      if not srt_content then
+        log("warn", "SubDL: download yielded no subtitle (" .. describe_download(tmp_zip, code) .. ")")
+        if on_done then on_done(nil, code, url, nil) end
+        return
+      end
       -- Pass orig_name (4th arg) so callers write the SxxExx filename
       if on_done then on_done(srt_content, code, url, orig_name) end
     end)
@@ -611,6 +672,7 @@ function M.download_async(sub, on_done)
   -- When unpack_files is available (unpack=1 was used), prefer downloading
   -- the individual SRT file directly — no zip extraction needed and the
   -- file's name includes the SxxExx tag which the episode matcher needs.
+  -- Retry once with the alternate key on failure, then fall back to the zip.
   local unpack_files = sub.unpack_files
   if type(unpack_files) == "table" and #unpack_files > 0 then
     local uf = unpack_files[1]
@@ -620,61 +682,54 @@ function M.download_async(sub, on_done)
       if not uf_url:match("^https?://") then
         uf_url = M._cfg.download_url .. uf_url
       end
-      local key = M.get_download_key()
-      if key ~= "" then uf_url = M.rewrite_download_api_key(uf_url, key) end
+
+      local function try_unpack(key, attempt)
+        local url = uf_url
+        if key ~= "" then url = M.rewrite_download_api_key(uf_url, key) end
+        local tmp_srt = "/tmp/subdl_uf_" .. os.time() .. "_" .. math.random(10000) .. ".srt"
+        return _mp.command_native_async({
+          name = "subprocess",
+          args = { "curl", "-sS", "-o", tmp_srt, "-w", "%{http_code}",
+                   "--connect-timeout", "10", "--max-time", "20", url },
+          capture_stdout = true,
+          playback_only = false,
+        }, function(_ok, res)
+          local code = tonumber(res and res.stdout) or 0
+          local u = get_utils()
+          local info = u and u.file_info(tmp_srt)
+          local good = code >= 200 and code < 300 and info and info.size > 0
+          if not good then
+            local desc = describe_download(tmp_srt, code)
+            os.remove(tmp_srt)
+            if attempt == 0 then
+              local alt = alternate_download_key(key)
+              if alt then M.set_download_key(alt) end
+              log("warn", string.format("SubDL: unpack download failed (%s), retrying%s",
+                      desc, alt and " with alternate key" or ""))
+              return try_unpack(alt or key, 1)
+            end
+            log("warn", "SubDL: unpack download failed (" .. desc .. "), falling back to zip")
+            return do_curl(base_url, M.get_download_key(), false, uf_name or sub.release_name)
+          end
+          local srt_content = nil
+          local f = io.open(tmp_srt, "r")
+          if f then
+            srt_content = f:read("*a")
+            f:close()
+          end
+          os.remove(tmp_srt)
+          -- Pass the original filename so callers write SxxExx into the name
+          if on_done then on_done(srt_content, code, url, uf_name) end
+        end)
+      end
 
       log("debug", "SubDL: downloading via unpack_files URL: " .. (uf_name or "?"))
-
-      local tmp_srt = "/tmp/subdl_uf_" .. os.time() .. "_" .. math.random(10000) .. ".srt"
-      local curl_args = {
-        "curl", "-sS", "-o", tmp_srt, "-w", "%{http_code}",
-        "--connect-timeout", "10", "--max-time", "20",
-        uf_url,
-      }
-      return _mp.command_native_async({
-        name = "subprocess",
-        args = curl_args,
-        capture_stdout = true,
-        playback_only = false,
-      }, function(_ok, res)
-        local code = tonumber(res and res.stdout) or 0
-        local u = get_utils()
-        local srt_info = u and u.file_info(tmp_srt)
-
-        if code == 429 then
-          os.remove(tmp_srt)
-          local alt = alternate_download_key(key)
-          if alt then
-            log("warn", "SubDL: unpack 429, retrying with alternate key")
-            M.set_download_key(alt)
-          end
-          if on_done then on_done(nil, code, uf_url, nil) end
-          return
-        end
-
-        if code < 200 or code >= 300 or not srt_info or srt_info.size == 0 then
-          os.remove(tmp_srt)
-          log("warn", "SubDL: unpack_files direct download failed (" .. code .. "), falling back to zip")
-          -- Fall back to zip path
-          return do_curl(base_url, M.get_download_key(), false)
-        end
-
-        local srt_content = nil
-        local f = io.open(tmp_srt, "r")
-        if f then
-          srt_content = f:read("*a")
-          f:close()
-        end
-        os.remove(tmp_srt)
-
-        -- Pass the original filename so callers write SxxExx into the name
-        if on_done then on_done(srt_content, code, uf_url, uf_name) end
-      end)
+      return try_unpack(M.get_download_key(), 0)
     end
   end
 
   local key = M.get_download_key()
-  return do_curl(base_url, key, false)
+  return do_curl(base_url, key, false, sub.release_name)
 end
 
 return M

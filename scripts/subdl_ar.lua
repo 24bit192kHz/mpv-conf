@@ -19,6 +19,8 @@ local config_loader = require 'subdl_ar.config'
 local subdl_provider = require 'subdl_ar.providers.subdl'
 local tvdb_provider = require 'subdl_ar.providers.tvdb'
 local cache_mod = require 'subdl_ar.cache'
+local store_mod = require 'subdl_ar.store'
+local subtitle_api = require 'subdl_ar.util.subtitle_api'
 local http_mod = require 'subdl_ar.http'
 local uosc_picker = require 'subdl_ar.ui.uosc_picker'
 
@@ -50,6 +52,7 @@ local matches_title_words = match_util.matches_title_words
 local calculate_cour_mappings = match_util.calculate_cour_mappings
 local build_valid_mapping_sets = match_util.build_valid_mapping_sets
 local find_matching_episode_file = match_util.find_matching_episode_file
+local expand_unpack_files = match_util.expand_unpack_files
 
 local _cfg = config_loader.load(mp, options)
 local dotenv = _cfg.dotenv
@@ -92,6 +95,59 @@ local RATE_LIMIT_SOFT_WAIT = 30
 local RATE_LIMIT_SOFT_MAX_RETRIES = 2
 -- When daily download quota is exhausted, block until reset (or this floor).
 local RATE_LIMIT_QUOTA_FLOOR = 3600
+
+-- Persistent season-level search cache (SQLite + zstd, see subdl_ar.store).
+-- One search serves every episode of a season: SubDL's season queries return
+-- the whole candidate pool, and the per-episode cour filter runs in memory on
+-- the cached rows. search_cache_ttl_days=0 disables the cache.
+store_mod.init({ dir = CACHE_DIR, mp = mp })
+local SEARCH_CACHE_TTL = (tonumber(config.search_cache_ttl_days) or 30) * 86400
+
+-- Offline Subscene Arabic index served by the subtitle-api Docker container
+-- (built by build_subscene_db.py, served by subtitle-api/server.py). mpv asks
+-- the API for the one matching subtitle file; a hit costs zero SubDL quota.
+-- When the API is unreachable the source disables itself and everything falls
+-- through to SubDL.
+local function opt_or(key, default)
+    local v = config[key]
+    if v and trim(v) ~= "" then return v end
+    return default
+end
+subtitle_api.init({
+    mp = mp,
+    url = opt_or("subtitle_api_url", "http://127.0.0.1:8787"),
+    timeout = tonumber(config.subtitle_api_timeout) or 10,
+})
+
+-- Skip fetching when the playing video already has a same-stem external
+-- subtitle loaded (the per-episode sibling kept in-folder). Set to "no" to
+-- always fetch regardless.
+local SKIP_IF_SIBLING_SUB = opt_or("skip_if_sibling_sub", "yes") ~= "no"
+
+local function search_cache_get(key)
+    if SEARCH_CACHE_TTL <= 0 or not store_mod.available() then return nil end
+    local raw = store_mod.get("search", key, SEARCH_CACHE_TTL)
+    if not raw then return nil end
+    local ok, parsed = pcall(utils.parse_json, raw)
+    if not ok or type(parsed) ~= "table" or #parsed == 0 then return nil end
+    normalize_subtitles_metadata(parsed)
+    return parsed
+end
+
+local function search_cache_put(key, subs)
+    if SEARCH_CACHE_TTL <= 0 or not subs or #subs == 0 then return end
+    if not store_mod.available() then return end
+    local clean = {}
+    for i, s in ipairs(subs) do
+        local c = {}
+        for k, v in pairs(s) do
+            if type(k) ~= "string" or k:sub(1, 1) ~= "_" then c[k] = v end
+        end
+        clean[i] = c
+    end
+    local ok, enc = pcall(utils.format_json, clean)
+    if ok and enc then store_mod.put("search", key, enc) end
+end
 
 -- Apply a hard download-quota block from /api/v2/me usage.
 -- Returns true if quota is exhausted (caller should stop retries).
@@ -180,6 +236,8 @@ end
 local subs_cache = {}
 local downloaded_subs = {}
 local current_index = {}
+local local_candidates = {}   -- video_name -> top-N list from subtitle-api /candidates
+local local_idx = {}          -- video_name -> index of the loaded local candidate
 local season_files_map = {}
 local movie_files_map = {}
 local last_subs_list = nil
@@ -763,6 +821,10 @@ local function execute_search_strategies(strategies, callbacks)
         mp.msg.info(string.format("SubDL: executing %s strategy %d/%d", log_type, i, #queries))
         local subs = fetch_subdl_api(query)
         normalize_subtitles_metadata(subs)
+        -- Season packs arrive as one entry with unpack_files[]; expand to
+        -- per-episode entries so ranking picks, and download fetches, the
+        -- exact episode file instead of the pack's first file.
+        subs = expand_unpack_files(subs)
 
         for _, sub in ipairs(subs) do
             local sub_id = sub.id or sub.sd_id or tostring(sub)
@@ -807,13 +869,11 @@ local function fetch_sub_list_tv(show_title, season, episode, tmdb_id)
     -- FIX 4: URL encode the entire query value including spaces
     table.insert(queries, "film_name=" .. url_safe(show_title .. " " .. es))
     table.insert(queries, string.format("film_name=%s&season_number=%d&episode_number=%d", url_safe(show_title), season, episode))
-    table.insert(queries, "query=" .. url_safe(show_title .. " " .. es))
     if DEEP_SEARCH then
         for i = 1, math.min(2, #candidates) do
             local c = candidates[i]
             if c ~= show_title then
                 table.insert(queries, "film_name=" .. url_safe(c .. " " .. es))
-                table.insert(queries, "query=" .. url_safe(c .. " " .. es))
             end
         end
     end
@@ -821,33 +881,44 @@ local function fetch_sub_list_tv(show_title, season, episode, tmdb_id)
     
     for i, q in ipairs(queries) do queries[i] = string.format("languages=ar&subs_per_page=50&%s", q) end
 
-    local exact_count = 0
+    local function tv_episode_filter(sub)
+        local pair_set = sub._norm_pairs or {}
+        local season_set = sub._norm_seasons or {}
+        local ep_set = sub._norm_eps or {}
+        if next(pair_set) then
+            if not pair_set[season] then return false end
+        elseif next(season_set) then
+            if not season_set[season] then return false end
+        else
+            local api_sn = tonumber(sub.season_number) or tonumber(sub.season)
+            if api_sn and api_sn ~= season then return false end
+        end
+        if next(ep_set) and not ep_set[episode] then return false end
+        return true
+    end
 
-    local subs = execute_search_strategies(queries, {
-        type = "TV search",
-        filter = function(sub)
-            local pair_set = sub._norm_pairs or {}
-            local season_set = sub._norm_seasons or {}
-            local ep_set = sub._norm_eps or {}
-            if next(pair_set) then
-                if not pair_set[season] then return false end
-            elseif next(season_set) then
-                if not season_set[season] then return false end
-            else
-                local api_sn = tonumber(sub.season_number) or tonumber(sub.season)
-                if api_sn and api_sn ~= season then return false end
-            end
-            if next(ep_set) and not ep_set[episode] then return false end
-            return true
-        end,
-        on_accept = function(sub)
-            local pair_set = sub._norm_pairs or {}
-            if pair_set[season] and pair_set[season][episode] then
-                exact_count = exact_count + 1
-            end
-        end,
-        should_stop = function(i, count) return exact_count >= 5 end
-    })
+    -- Same season-pool cache as anime: one search per show/season, per-episode
+    -- filtering happens in memory on the cached rows.
+    local cache_key = string.format("tv/%s/s%d/deep%d",
+        tmdb_id and ("tmdb" .. tostring(tmdb_id)) or ("t:" .. show_title:lower()),
+        season or 1, DEEP_SEARCH and 1 or 0)
+    local raw_subs = search_cache_get(cache_key)
+    if raw_subs then
+        mp.msg.info(string.format("SubDL: search cache hit (%d season results), filtering for S%02dE%02d",
+            #raw_subs, season or 1, episode))
+    else
+        raw_subs = execute_search_strategies(queries, { type = "TV search" })
+        search_cache_put(cache_key, raw_subs)
+    end
+
+    local subs = nil
+    if raw_subs then
+        subs = {}
+        for _, sub in ipairs(raw_subs) do
+            if tv_episode_filter(sub) then table.insert(subs, sub) end
+        end
+        if #subs == 0 then subs = nil end
+    end
     
     if subs then
         table.sort(subs, function(a, b)
@@ -883,14 +954,12 @@ local function fetch_sub_list_movie(title, year, tmdb_id)
     add("film_name=" .. url_safe(title))
     -- FIX 5: URL encode the year query properly
     if year then add("film_name=" .. url_safe(title .. " " .. year)) end
-    add("query=" .. url_safe(title))
     if DEEP_SEARCH then
         for i = 1, math.min(3, #candidates) do
             local c = candidates[i]
             if c ~= title then
                 add("film_name=" .. url_safe(c))
                 if year then add("film_name=" .. url_safe(c .. " " .. year)) end
-                add("query=" .. url_safe(c))
             end
         end
     end
@@ -975,13 +1044,11 @@ local function fetch_sub_list_anime(title, season, episode, tmdb_id, opts)
     end
     add("film_name=" .. url_safe(string.format("%s E%02d", title, episode)))
     add("film_name=" .. url_safe(title))
-    add("query=" .. url_safe(title))
     if DEEP_SEARCH then
         for i = 1, math.min(3, #candidates) do
             local c = candidates[i]
             if c ~= title then
                 add("film_name=" .. url_safe(c))
-                add("query=" .. url_safe(c))
             end
         end
     end
@@ -1029,13 +1096,34 @@ local function fetch_sub_list_anime(title, season, episode, tmdb_id, opts)
         return true
     end
 
-    local subs = execute_search_strategies(queries, {
-        type = "anime search",
-        filter = subtitle_matches_cour,
-        should_stop = function(i, count)
-            return not DEEP_SEARCH and i >= 9 and count >= ANIME_EARLY_STOP_COUNT
+    -- Season-level raw pool is episode-independent (SubDL season queries
+    -- return the whole candidate pool); cache it, then apply the per-episode
+    -- cour filter in memory. Episodes 2..N of a season cost zero search API.
+    local cache_key = string.format("anime/%s/s%d/deep%d",
+        tmdb_id and ("tmdb" .. tostring(tmdb_id)) or ("t:" .. title:lower()),
+        season or 1, DEEP_SEARCH and 1 or 0)
+    local raw_subs = search_cache_get(cache_key)
+    if raw_subs then
+        mp.msg.info(string.format("SubDL: search cache hit (%d season results), filtering for E%d",
+            #raw_subs, episode))
+    else
+        raw_subs = execute_search_strategies(queries, {
+            type = "anime search",
+            should_stop = function(i, count)
+                return not DEEP_SEARCH and i >= 9 and count >= ANIME_EARLY_STOP_COUNT
+            end
+        })
+        search_cache_put(cache_key, raw_subs)
+    end
+
+    local subs = nil
+    if raw_subs then
+        subs = {}
+        for _, sub in ipairs(raw_subs) do
+            if subtitle_matches_cour(sub) then table.insert(subs, sub) end
         end
-    })
+        if #subs == 0 then subs = nil end
+    end
 
     local function get_anime_release_score(sub)
         local rn = (sub.release_name or ""):lower()
@@ -1584,6 +1672,40 @@ local function count_arabic_subs()
     return count
 end
 
+-- True when an external subtitle whose filename stem matches the playing video
+-- is already loaded -- the per-episode sibling the user keeps in-folder. Treated
+-- as "this episode already has its subtitle" so we don't fetch a duplicate.
+local SIBLING_SUB_EXTS = { srt = true, ass = true, ssa = true, sub = true, vtt = true }
+
+local function has_sibling_sub()
+    local path = mp.get_property("path")
+    if not path then return false end
+    local stem = (basename(path):match("(.+)%.%w+$") or ""):lower()
+    if stem == "" then return false end
+    -- Track-list check (a matching external sub already loaded).
+    for _, t in ipairs(mp.get_property_native("track-list") or {}) do
+        if t.type == "sub" and t.external then
+            local fn = t["external-filename"] or ""
+            local sub_stem = (basename(fn):match("(.+)%.%w+$") or ""):lower()
+            if sub_stem ~= "" and sub_stem == stem then return true end
+        end
+    end
+    -- Filesystem check: a same-stem subtitle file next to the video. This does
+    -- not depend on autoload having populated the track list yet, so it fires
+    -- reliably on first load.
+    local dir = path:match("^(.*)/[^/]*$")
+    if dir then
+        for _, fn in ipairs(utils.readdir(dir, "files") or {}) do
+            local fstem, fext = fn:match("(.+)%.([%w]+)$")
+            if fstem and fext and SIBLING_SUB_EXTS[fext:lower()]
+                and fstem:lower() == stem then
+                return true
+            end
+        end
+    end
+    return false
+end
+
 local function publish_uosc_button()
     local ar_count = count_arabic_subs()
     local tooltip = "Arabic Subs"
@@ -1698,6 +1820,100 @@ local function check_existing_subtitle_for_file(video_filename)
     return false
 end
 
+-- Ask the subtitle-api container for the one matching subtitle file before
+-- spending any SubDL quota. The API does the DB lookup + archive extraction
+-- and returns the episode-matched .srt/.ass bytes; we persist it into the
+-- season dir (so offline replays hit the normal local cache) and return the
+-- path. Returns the subtitle path or nil.
+-- Load one specific candidate (by subscene_id) via the API, persist it into
+-- the season dir, register it for offline replays. Returns the path or nil.
+local function load_api_candidate(media, video_name, subscene_id)
+    local tmp = subtitle_api.fetch({
+        title = media.title,
+        season = media.season,
+        episode = media.episode,
+        content_type = media.content_type,
+        filename = video_name,
+    }, subscene_id)
+    if not tmp then return nil end
+
+    local meta = subtitle_api.last_meta() or {}
+    local ctype = media.content_type
+    local season = media.season or 1
+    local type_dir = ctype == "movie" and "Movies"
+        or (ctype == "anime" and "Anime" or (ctype == "tv" and "TV" or "Other"))
+    local show_dir = string.format("%s/%s/%s%s", SUBS_DIR, type_dir,
+        subtitle_directory_name(media.title),
+        (ctype == "tv" or ctype == "anime") and string.format("/S%02d", season) or "")
+    safe_mkdir(show_dir)
+
+    local src_name = (meta.filename or ""):match("([^/]+)$")
+    if not src_name or src_name == "" then src_name = "subtitle.srt" end
+    local dest = show_dir .. "/" .. sanitize_filename(src_name)
+    local cp = safe_copy(tmp, dest)
+    os.remove(tmp)
+    if not (cp and cp.status == 0) then
+        mp.msg.warn("subtitle-api: could not persist " .. tostring(dest))
+        return nil
+    end
+
+    if ctype == "tv" or ctype == "anime" then
+        season_files_map[media.title] = season_files_map[media.title] or {}
+        season_files_map[media.title][season] = season_files_map[media.title][season] or {}
+        -- overwrite any stale/dangling entry so a fresh API result wins.
+        if media.episode then
+            season_files_map[media.title][season][media.episode] = dest
+        end
+    end
+    mp.msg.info(string.format("subtitle-api: loaded %s (conf=%s show=%s)",
+        dest:gsub(SUBS_DIR .. "/", ""), tostring(meta.conf or "?"), tostring(meta.show or "?")))
+    return dest
+end
+
+-- Ask the subtitle-api for the top-N candidates, load the best one, and stash
+-- the list so Ctrl+Shift+V can step through the rest. Returns the path or nil.
+local function try_local_db(media, video_name)
+    if not subtitle_api.available() or not media or not media.title then return nil end
+    local cands = subtitle_api.candidates({
+        title = media.title,
+        season = media.season,
+        episode = media.episode,
+        content_type = media.content_type,
+        filename = video_name,
+    }, 5)
+    if not cands or #cands == 0 then
+        local_candidates[video_name] = nil
+        return nil
+    end
+    local_candidates[video_name] = cands
+    mp.msg.info(string.format("subtitle-api: %d candidate(s) for %s", #cands, media.title))
+    -- Load the first candidate that actually serves a file. A candidate can be
+    -- unservable (its episode member is corrupt in the dump), so step down the
+    -- list; Ctrl+Shift+V continues from whichever one loaded.
+    for i = 1, #cands do
+        local dest = load_api_candidate(media, video_name, cands[i].subscene_id)
+        if dest then
+            local_idx[video_name] = i
+            return dest
+        end
+    end
+    return nil
+end
+
+-- Ctrl+Shift+V: load the next local candidate for this video, if any remain.
+local function try_local_next(media, video_name)
+    local cands = local_candidates[video_name]
+    if not cands then return nil end
+    local nxt = (local_idx[video_name] or 0) + 1
+    if not cands[nxt] then return nil end
+    local dest = load_api_candidate(media, video_name, cands[nxt].subscene_id)
+    if dest then
+        local_idx[video_name] = nxt
+        return dest
+    end
+    return nil
+end
+
 local function enhanced_auto_fetch_if_needed()
     if not is_enabled() then return end
     local path = mp.get_property("path")
@@ -1705,7 +1921,13 @@ local function enhanced_auto_fetch_if_needed()
     
     local video_name = basename(path)
     local media = resolve_media_info(path, video_name)
-    
+
+    -- The episode's own sibling subtitle is already loaded -> nothing to fetch.
+    if SKIP_IF_SIBLING_SUB and has_sibling_sub() then
+        mp.msg.info("SubDL: matching sibling subtitle already loaded, skipping fetch")
+        return
+    end
+
     -- Check cached files based on media content_type
     if media.content_type == "movie" then
         if check_existing_subtitle_for_file(media.filename) then
@@ -1723,6 +1945,18 @@ local function enhanced_auto_fetch_if_needed()
         if local_file then mp.commandv("sub-add", local_file); mp.osd_message("Loaded local subtitle", 2); return end
     end
     
+    -- Offline Subscene index: zero-quota local hit before any API search.
+    if not has_arabic_sub() then
+        local local_sub = try_local_db(media, video_name)
+        if local_sub then
+            local vpath = mp.get_property("path")
+            activation_util.activate(mp, local_sub, vpath, CACHE_TO_MEDIA_DIR)
+            mp.msg.info("SubDL: loaded subtitle from local DB", local_sub)
+            mp.osd_message("Loaded local DB subtitle", 2)
+            return
+        end
+    end
+
     if not has_arabic_sub() then
         osd_show("Searching for Arabic subtitles...")
         -- Auto path: top candidate only (1 download). Manual next for more.
@@ -1924,7 +2158,8 @@ local function handle_manual_search(query)
     
     mp.osd_message("Searching: " .. query, 2)
     
-    local api_url = string.format("query=%s&languages=ar&subs_per_page=50",
+    -- film_name, not query: the v2 endpoint 400s on a bare query= search.
+    local api_url = string.format("film_name=%s&languages=ar&subs_per_page=50",
                                   url_safe(query))
     
     local subs = fetch_subdl_api(api_url)
@@ -1982,6 +2217,22 @@ mp.register_event("file-loaded", enhanced_auto_fetch_if_needed)
 mp.register_event("end-file", abort_inflight)
 mp.register_event("shutdown", function() cache_mod.force_save() end)
 mp.add_key_binding("Ctrl+Shift+V", "subdl_ar_next", function()
+    -- Step through the local top-N candidates first; when exhausted, fall
+    -- through to the SubDL "next candidate" path.
+    if is_enabled() then
+        local path = mp.get_property("path")
+        local video_name = path and basename(path) or nil
+        local media = path and resolve_media_info(path, video_name) or nil
+        if media and video_name and local_candidates[video_name] then
+            local nxt = try_local_next(media, video_name)
+            if nxt then
+                activation_util.activate(mp, nxt, path, CACHE_TO_MEDIA_DIR)
+                mp.osd_message(string.format("Local subtitle %d/%d",
+                    local_idx[video_name], #local_candidates[video_name]), 2)
+                return
+            end
+        end
+    end
     fetch_next_sub({ auto = false })
 end)
 mp.add_key_binding("Ctrl+V", "subdl_ar_toggle_deep", toggle_deep_search)

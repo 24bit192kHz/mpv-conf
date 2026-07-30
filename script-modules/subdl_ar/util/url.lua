@@ -36,7 +36,11 @@ end
 function M.sanitize_filename(name)
   local ext = name:match("%.([^.]+)$") or ""
   local base = name:gsub("%.[^.]+$", "")
-  base = base:gsub("[%[%]%(%)'\"`]", "")
+  -- Brackets become separators, not deletions: "E1[720p]" must not fuse into
+  -- "E1720p" (the episode matcher would read episode 1720). Quotes still
+  -- delete outright — they never carry token boundaries.
+  base = base:gsub("[%[%]%(%)]", "_")
+    :gsub("['\"`]", "")
     :gsub("%s+", "_")
     :gsub("_+", "_")
     :gsub("^_", "")
