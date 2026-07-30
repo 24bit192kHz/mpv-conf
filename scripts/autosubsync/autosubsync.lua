@@ -495,29 +495,42 @@ count_cues = function(path)
     return n
 end
 
--- ASS style-name first-word that marks a style as signs/songs/OP/ED/title-card
--- (everything that is NOT spoken dialogue). Anime forced tracks mix
+-- ASS style-name prefix that marks a style as signs/songs/OP/ED/title-card
+-- (everything that is NOT spoken dialogue). Anime "forced" tracks mix
 -- "Default" (real dialogue) with "Time"/"Time Shadow" (the typewriter
 -- title-card effect), "OPL"/"OPR"/"ED English"/"ED Japanese" (OP/ED lyrics)
--- and "Sign". First-token match (case-insensitive) so that "ED English",
--- "Time Shadow", "OP-Romaji" all get caught, while "Default", "Alternate",
+-- and "Sign"/"Signs". Uses PREFIX match (case-insensitive) on the first
+-- non-separator token, so "ED English", "Time Shadow", "OP-Romaji",
+-- "Signs", "Titles" all get caught, while "Default", "Alternate",
 -- "Main", "Subtitle" pass through.
-local SIGN_FIRSTWORDS = {
-    op = true, ed = true, opl = true, opr = true,
-    time = true, sign = true, title = true, banner = true,
-    ts = true, typeset = true, typesetting = true,
-    karaoke = true, song = true,
-    epi = true, eyecatch = true, neon = true,
-    splash = true, headline = true, instruct = true,
-    picture = true, abandoned = true,
-    nextep = true, next = true, preview = true,
+--
+-- "english" prefix catches SGKK/Commie releases that name the OP/ED
+-- English-translated karaoke style "ENGLISH" (cues typically use
+-- {\blur3\fad(250,250)} / {\fad(...)} effects -- dead-giveaway of song).
+-- Acceptable trade-off: a release that genuinely uses a style named
+-- "English Dialogue" for spoken dialogue would lose those; rare vs. the
+-- OP/ED-leak hazard.
+local SIGN_PREFIXES = {
+    "op", "ed", "opl", "opr",
+    "time", "sign", "title", "banner",
+    "ts", "typeset",
+    "karaoke", "song",
+    "epi", "eyecatch", "neon",
+    "splash", "headline", "instruct",
+    "picture", "abandoned",
+    "nextep", "next", "preview",
+    "english", "eng", "romaji",
 }
 
 local function is_dialogue_style(name)
     if not name then return true end
+    -- lowercase + strip leading separators (space/dash/punct), then take
+    -- the first token delimited by space/dash/underscore.
     local lc = name:lower():gsub("^[%s%p]+", "")
-    local first = lc:match("([^%s%-_]+)")
-    if first and SIGN_FIRSTWORDS[first] then return false end
+    local first = lc:match("([^%s%-_]+)") or ""
+    for _, p in ipairs(SIGN_PREFIXES) do
+        if first:sub(1, #p) == p then return false end
+    end
     return true
 end
 
