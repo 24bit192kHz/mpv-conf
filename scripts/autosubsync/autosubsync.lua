@@ -997,11 +997,11 @@ end
 init()
 -- n = automatic sync (embedded text sub if present, else audio).
 -- ctrl+n = the old interactive menu for manual reference/engine selection.
--- ctrl+shift+delete = wipe the per-show transform cache for the current show
--- and force a fresh sync on the next play (or now if you press n after).
+-- F12 = wipe the per-show transform cache for the current show and force
+-- a fresh sync on the next play (or now if you press n after).
 mp.add_key_binding("n", "autosubsync-auto", auto_sync)
 mp.add_key_binding("ctrl+n", "autosubsync-menu", function() ref_selector:open() end)
-mp.add_key_binding("ctrl+shift+delete", "autosubsync-clear-cache", function()
+mp.add_key_binding("F12", "autosubsync-clear-cache", function()
     local path = TRANSFORM_DIR .. "/" .. show_key() .. ".json"
     os.remove(path)
     notify("Show transform cache cleared; next sync will recompute.", "info", 3)
