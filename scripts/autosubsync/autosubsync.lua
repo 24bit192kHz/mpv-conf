@@ -331,6 +331,7 @@ local function sync_subtitles(ref_sub_path, force_engine)
             local best = pick_best_embedded_ref(refs)
             if best and best.cues >= config.auto_sync_min_cues then
                 ref = best.path
+                notify(string.format("using embedded sub ref: %s (%d cues)", best.path, best.cues), "info", 1)
             else
                 local npz = dir .. "/video.npz"
                 if utils.file_info(npz) then
