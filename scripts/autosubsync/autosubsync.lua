@@ -18,6 +18,9 @@ local track_selector
 -- with "attempt to call global 'get_embedded_refs' (a nil value)".
 local get_embedded_refs
 local pick_best_embedded_ref
+local dialogue_only_ass
+local count_dialogue_cues
+local count_cues
 
 -- Config
 -- Options can be changed here or in a separate config file.
