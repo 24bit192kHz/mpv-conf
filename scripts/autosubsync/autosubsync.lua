@@ -52,6 +52,14 @@ local config = {
     -- On-load: skip auto-sync if the best embedded sub has fewer cues than
     -- this (a signs/songs track is too sparse to be a reliable reference).
     auto_sync_min_cues = 100,
+    -- Strip signs/songs/OP/ED/title-card cues from the .ass reference before
+    -- passing it to ffsubsync. Anime "forced" tracks mix the dialogue
+    -- ("Default" style) with dozens of typewriter title-card cues and OP/ED
+    -- karaoke flows; ffsubsync turns every Dialogue cue into a speech-activity
+    -- blip, so a cluster of 0.25s "P"/"Pre"/"Prese" cues at t=1.85s poisons
+    -- the alignment and the matched offset can be off by tens of seconds.
+    -- Off = pass the full .ass through (old behaviour).
+    dialogue_only_filter = true,
     -- Seconds to wait after a subtitle is selected before auto-syncing, so
     -- the loader (e.g. subdl_ar) finishes adding tracks first.
     auto_sync_delay = 0.7,
@@ -343,8 +351,12 @@ local function sync_subtitles(ref_sub_path, force_engine)
             local refs = get_embedded_refs(active and active.id or nil)
             local best = pick_best_embedded_ref(refs)
             if best and best.cues >= config.auto_sync_min_cues then
-                ref = best.path
-                notify(string.format("using embedded sub ref: %s (%d cues)", best.path, best.cues), "info", 1)
+                ref = dialogue_only_ass(best.path)
+                notify(string.format("using embedded sub ref: %s (%d cues)", ref, best.cues), "info", 1)
+                if ref ~= best.path then
+                    notify(string.format("Stripped signs/songs from ref (%d -> %d cues)",
+                            count_cues(best.path), count_dialogue_cues(ref)), "info", 3)
+                end
             else
                 local npz = dir .. "/video.npz"
                 if utils.file_info(npz) then
@@ -468,6 +480,102 @@ local function count_cues(path)
     return n
 end
 
+-- ASS style-name first-word that marks a style as signs/songs/OP/ED/title-card
+-- (everything that is NOT spoken dialogue). Anime forced tracks mix
+-- "Default" (real dialogue) with "Time"/"Time Shadow" (the typewriter
+-- title-card effect), "OPL"/"OPR"/"ED English"/"ED Japanese" (OP/ED lyrics)
+-- and "Sign". First-token match (case-insensitive) so that "ED English",
+-- "Time Shadow", "OP-Romaji" all get caught, while "Default", "Alternate",
+-- "Main", "Subtitle" pass through.
+local SIGN_FIRSTWORDS = {
+    op = true, ed = true, opl = true, opr = true,
+    time = true, sign = true, title = true, banner = true,
+    ts = true, typeset = true, typesetting = true,
+    karaoke = true, song = true,
+    epi = true, eyecatch = true, neon = true,
+    splash = true, headline = true, instruct = true,
+    picture = true, abandoned = true,
+    nextep = true, next = true, preview = true,
+}
+
+local function is_dialogue_style(name)
+    if not name then return true end
+    local lc = name:lower():gsub("^[%s%p]+", "")
+    local first = lc:match("([^%s%-_]+)")
+    if first and SIGN_FIRSTWORDS[first] then return false end
+    return true
+end
+
+-- Pull the Style field (4th comma-separated field, "Dialogue: Marked,Start,
+-- End,Style,...") out of one .ass Dialogue line. Returns "" / nil if the
+-- line is malformed.
+local function ass_style_of_line(line)
+    -- the prefix "Dialogue:" with its trailing comma is field 0; fields after
+    -- it are 1=Marked/Layer, 2=Start, 3=End, 4=Style
+    local rest = line:sub(("Dialogue:"):len() + 1)
+    local r = rest
+    for _ = 1, 3 do
+        local c = r:find(",", 1, true)
+        if not c then return nil end
+        r = r:sub(c + 1)
+    end
+    local c = r:find(",", 1, true)
+    return c and r:sub(1, c - 1) or r
+end
+
+-- For .ass: count cues whose style is dialogue-class (strip signs/songs/OP/
+-- ED/title-card). For .srt (or unrecognized): count every line. Used by
+-- extract_all_refs so we size a sub up by its DIALOGUE density -- Lain's
+-- "default forced" track is 286 cues total but only 201 dialogue; the other
+-- 85 are the typewriter title-card + OP + ED.
+local function count_dialogue_cues(path)
+    local lowered = path:lower()
+    if lowered:sub(-4) ~= ".ass" then return count_cues(path) end
+    local f = io.open(path, "r")
+    if not f then return 0 end
+    local n = 0
+    for line in f:lines() do
+        if line:sub(1, 9) == "Dialogue:" then
+            if is_dialogue_style(ass_style_of_line(line) or "") then n = n + 1 end
+        end
+    end
+    f:close()
+    return n
+end
+
+-- Write a filtered copy of an .ass keeping only dialogue-style Dialogue lines
+-- (the [V4+ Styles]/[Events]/comments headers are preserved). Returns the
+-- filtered path, or the original path when there's nothing to filter, the file
+-- isn't .ass, all cues would be dropped (no dialogue at all -- treat the file
+-- as a pure signs/songs track and let ffsubsync fall back if it can), or the
+-- filter is disabled. The output sits next to the source at "<base>.dlg.ass"
+-- in the cached ref dir so it sticks between runs (it's only ~30 KB).
+local function dialogue_only_ass(path)
+    if not config.dialogue_only_filter then return path end
+    if path:lower():sub(-4) ~= ".ass" then return path end
+    local f = io.open(path, "r")
+    if not f then return path end
+    local out, kept, dropped = {}, 0, 0
+    for line in f:lines() do
+        if line:sub(1, 9) == "Dialogue:" then
+            if is_dialogue_style(ass_style_of_line(line) or "") then
+                table.insert(out, line); kept = kept + 1
+            else
+                dropped = dropped + 1
+            end
+        else
+            table.insert(out, line)
+        end
+    end
+    f:close()
+    if dropped == 0 or kept == 0 then return path end
+    local dlg = path:sub(1, #path - 4) .. ".dlg.ass"
+    local o = io.open(dlg, "w")
+    if not o then return path end
+    o:write(table.concat(out, "\n")); o:close()
+    return dlg
+end
+
 -- Reference cache: extracting an embedded subtitle means ffmpeg traverses the
 -- (possibly huge, possibly cold-on-NFS) file once. The embedded subs of a given
 -- video never change, so extract them ONCE per video (single ffmpeg pass for
@@ -517,7 +625,7 @@ local function extract_all_refs(dir, exclude_id)
         if utils.file_info(dir .. "/" .. t._ref_file) then
             table.insert(list, {
                 id = t.id, lang = t.lang, codec = t.codec,
-                file = t._ref_file, cues = count_cues(dir .. "/" .. t._ref_file),
+                file = t._ref_file, cues = count_dialogue_cues(dir .. "/" .. t._ref_file),
             })
         end
     end
@@ -580,7 +688,20 @@ local function sync_to_best_embedded(gate_min_cues, exclude_id)
     -- sub) the detected offset flips sign per episode (E02=+30.56, E03=-33.38),
     -- so caching it would propagate garbage. The reliable per-show transform
     -- comes from the audio path (ffsubsync), which sync_subtitles caches.
-    sync_subtitles(best.path, config.altsub_subsync_tool ~= "ask" and config.altsub_subsync_tool or "alass")
+    --
+    -- Strip signs/songs/OP/ED/title cues from the .ass before handing it to
+    -- the syncer. The unfiltered track mixes dialogue with typewriter title-
+    -- card cues and OP/ED karaoke flows whose 0.25s micro-cues cluster at the
+    -- start and poison sub-to-sub alignment (Lain's "default forced" track is
+    -- 286 cues total / 201 dialogue; the 85 noise cues give ffsubsync a
+    -- garbage +25.85s offset that no dialogue-only signal would).
+    local ref_path = dialogue_only_ass(best.path)
+    if ref_path ~= best.path then
+        local total = count_cues(best.path)
+        notify(string.format("Stripped signs/songs from ref (%d -> %d cues)",
+                total, count_dialogue_cues(ref_path)), "info", 3)
+    end
+    sync_subtitles(ref_path, config.altsub_subsync_tool ~= "ask" and config.altsub_subsync_tool or "alass")
     return true
 end
 
