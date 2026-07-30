@@ -472,7 +472,7 @@ end
 local TEXT_SUB_CODECS = { subrip = true, ass = true }
 
 -- Count dialogue cues in an .ass/.srt to judge how "full" a subtitle is.
-local function count_cues(path)
+count_cues = function(path)
     local f = io.open(path, "r")
     if not f then return 0 end
     local n = 0
@@ -531,7 +531,7 @@ end
 -- extract_all_refs so we size a sub up by its DIALOGUE density -- Lain's
 -- "default forced" track is 286 cues total but only 201 dialogue; the other
 -- 85 are the typewriter title-card + OP + ED.
-local function count_dialogue_cues(path)
+count_dialogue_cues = function(path)
     local lowered = path:lower()
     if lowered:sub(-4) ~= ".ass" then return count_cues(path) end
     local f = io.open(path, "r")
@@ -553,7 +553,7 @@ end
 -- as a pure signs/songs track and let ffsubsync fall back if it can), or the
 -- filter is disabled. The output sits next to the source at "<base>.dlg.ass"
 -- in the cached ref dir so it sticks between runs (it's only ~30 KB).
-local function dialogue_only_ass(path)
+dialogue_only_ass = function(path)
     if not config.dialogue_only_filter then return path end
     if path:lower():sub(-4) ~= ".ass" then return path end
     local f = io.open(path, "r")
