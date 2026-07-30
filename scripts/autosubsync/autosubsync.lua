@@ -147,10 +147,19 @@ local function load_show_transform()
     local t = utils.parse_json(raw)
     if type(t) ~= "table" or type(t.offset) ~= "number" then return nil end
     if type(t.scale) ~= "number" then t.scale = 1.0 end
+    -- Tie the cache to the retimed file it produced: if the user wipes the
+    -- subdl cache (rm -rf .cache/subdl_ar) the retimed is gone too, and the
+    -- cached offset+scale would silently reapply a stale transform on the
+    -- next play. Reject the entry so the next run recomputes from scratch.
+    if type(t.retimed) == "string" and not utils.file_info(t.retimed) then
+        mp.msg.info("autosubsync: cached show transform's retimed is gone (" ..
+            t.retimed .. "), invalidating cache")
+        return nil
+    end
     return t
 end
 
-local function save_show_transform(offset, scale)
+local function save_show_transform(offset, scale, retimed_path)
     if not config.cache_show_transform or type(offset) ~= "number" then return end
     -- A subtitle-derived framerate scale can be wildly wrong on sparse refs
     -- (e.g. 1.186 for Lain's signs sub). Only trust it inside a plausible
@@ -162,7 +171,11 @@ local function save_show_transform(offset, scale)
     subprocess({ "mkdir", "-p", TRANSFORM_DIR })
     local f = io.open(TRANSFORM_DIR .. "/" .. show_key() .. ".json", "w")
     if f then
-        f:write(utils.format_json({ offset = offset, scale = scale }))
+        f:write(utils.format_json({
+            offset = offset,
+            scale = scale,
+            retimed = retimed_path or false,
+        }))
         f:close()
     end
 end
@@ -366,7 +379,7 @@ local function sync_subtitles(ref_sub_path, force_engine)
             -- ffsubsync logs its result to stderr, not stdout
             local offset, scale = parse_ffsubsync_transform(
                     (ret.stdout or "") .. "\n" .. (ret.stderr or ""))
-            if offset then save_show_transform(offset, scale) end
+            if offset then save_show_transform(offset, scale, retimed_subtitle_path) end
         end
         local old_sid = mp.get_property("sid")
         if mp.commandv("sub_add", retimed_subtitle_path) then
@@ -984,8 +997,19 @@ end
 init()
 -- n = automatic sync (embedded text sub if present, else audio).
 -- ctrl+n = the old interactive menu for manual reference/engine selection.
+-- ctrl+shift+delete = wipe the per-show transform cache for the current show
+-- and force a fresh sync on the next play (or now if you press n after).
 mp.add_key_binding("n", "autosubsync-auto", auto_sync)
 mp.add_key_binding("ctrl+n", "autosubsync-menu", function() ref_selector:open() end)
+mp.add_key_binding("ctrl+shift+delete", "autosubsync-clear-cache", function()
+    local path = TRANSFORM_DIR .. "/" .. show_key() .. ".json"
+    os.remove(path)
+    notify("Show transform cache cleared; next sync will recompute.", "info", 3)
+end)
+mp.register_script_message("autosubsync-clear-cache", function()
+    local path = TRANSFORM_DIR .. "/" .. show_key() .. ".json"
+    os.remove(path)
+end)
 
 -- Auto-sync a subtitle as soon as it gets selected (e.g. when subdl_ar loads
 -- the Arabic track). Fires only for external, non-retimed tracks, once each.
