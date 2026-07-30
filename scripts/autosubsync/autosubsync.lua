@@ -33,6 +33,24 @@ local config = {
 
     -- Overwrite the original subtitle file
     overwrite_old_sub = false,
+
+    -- Automatically sync a newly loaded external subtitle (no keypress).
+    auto_sync_on_load = true,
+    -- On-load: when no show transform is cached yet, establish the reliable
+    -- one via audio (then every later episode applies it instantly). Guarded
+    -- by auto_sync_audio + audio_is_cheap so a long lossless 4K track (a
+    -- multi-minute decode) doesn't get auto-audio'd.
+    auto_sync_audio = true,
+    -- On-load: skip auto-sync if the best embedded sub has fewer cues than
+    -- this (a signs/songs track is too sparse to be a reliable reference).
+    auto_sync_min_cues = 100,
+    -- Seconds to wait after a subtitle is selected before auto-syncing, so
+    -- the loader (e.g. subdl_ar) finishes adding tracks first.
+    auto_sync_delay = 0.7,
+    -- Cache the computed offset+framerate per show folder and reuse it for
+    -- every episode (applying it is instant). First episode of a show computes
+    -- it; the rest reuse it. Press n to recompute for the current show.
+    cache_show_transform = true,
 }
 mpopt.read_options(config, 'autosubsync')
 
@@ -74,8 +92,78 @@ local function subprocess(args)
         name = "subprocess",
         playback_only = false,
         capture_stdout = true,
+        capture_stderr = true,
         args = args
     }
+end
+
+-- Per-video cache dir (keyed by path+size+mtime) for extracted references and
+-- serialized speech. Defined early because sync_subtitles uses it for the
+-- audio-speech cache.
+local REF_CACHE_DIR = (os.getenv("HOME") or "/tmp") .. "/.cache/autosubsync/refs"
+
+local function djb2_hex(s)
+    local h = 5381
+    for i = 1, #s do
+        h = (h * 33 + s:byte(i)) % 0x100000000
+    end
+    return string.format("%08x", h)
+end
+
+local function video_ref_dir()
+    local path = mp.get_property("path") or ""
+    local info = utils.file_info(path)
+    local size = info and info.size or 0
+    local mtime = info and info.mtime or 0
+    return REF_CACHE_DIR .. "/" .. djb2_hex(path .. "|" .. size .. "|" .. mtime)
+end
+
+-- Show-level sync-transform cache. For a series (same source/release) the
+-- offset + framerate scale between the downloaded sub and the video is the
+-- same for every episode, so we compute it ONCE (first episode) and reuse it
+-- for the rest -- applying it is pure timestamp math (milliseconds), with no
+-- file traversal or ffsubsync run. Keyed by the containing folder.
+local TRANSFORM_DIR = (os.getenv("HOME") or "/tmp") .. "/.cache/autosubsync/transforms"
+
+local function show_key()
+    local path = mp.get_property("path") or ""
+    local dir = path:match("^(.*)/[^/]*$") or path
+    return djb2_hex(dir)
+end
+
+local function load_show_transform()
+    if not config.cache_show_transform then return nil end
+    local f = io.open(TRANSFORM_DIR .. "/" .. show_key() .. ".json", "r")
+    if not f then return nil end
+    local raw = f:read("*a"); f:close()
+    local t = utils.parse_json(raw)
+    if type(t) ~= "table" or type(t.offset) ~= "number" then return nil end
+    if type(t.scale) ~= "number" then t.scale = 1.0 end
+    return t
+end
+
+local function save_show_transform(offset, scale)
+    if not config.cache_show_transform or type(offset) ~= "number" then return end
+    -- A subtitle-derived framerate scale can be wildly wrong on sparse refs
+    -- (e.g. 1.186 for Lain's signs sub). Only trust it inside a plausible
+    -- framerate band (covers real PAL 25/24 ~= 1.042); otherwise keep the
+    -- offset but apply no stretch rather than distort every episode.
+    if type(scale) ~= "number" or scale < 0.90 or scale > 1.10 then
+        scale = 1.0
+    end
+    subprocess({ "mkdir", "-p", TRANSFORM_DIR })
+    local f = io.open(TRANSFORM_DIR .. "/" .. show_key() .. ".json", "w")
+    if f then
+        f:write(utils.format_json({ offset = offset, scale = scale }))
+        f:close()
+    end
+end
+
+local function parse_ffsubsync_transform(stdout)
+    local clean = (stdout or ""):gsub("\27%[[%d;]*m", ""):gsub("\27%][^\7]*\7", "")
+    local offset = tonumber(clean:match("offset seconds:%s*([%-%d%.]+)"))
+    local scale = tonumber(clean:match("framerate scale factor:%s*([%-%d%.]+)"))
+    return offset, scale
 end
 
 local url_decode = function(url)
@@ -134,11 +222,16 @@ end
 local function mkfp_retimed(sub_path)
     if config.overwrite_old_sub then
         return sub_path
-    elseif not startswith(sub_path, os_temp()) then
-        return table.concat { remove_extension(sub_path), '_retimed', get_extension(sub_path) }
-    else
-        return table.concat { remove_extension(mp.get_property("path")), '_retimed', get_extension(sub_path) }
     end
+    local base_stem, ext
+    if not startswith(sub_path, os_temp()) then
+        base_stem, ext = remove_extension(sub_path), get_extension(sub_path)
+    else
+        base_stem, ext = remove_extension(mp.get_property("path")), get_extension(sub_path)
+    end
+    -- don't stack suffixes when re-syncing an already-retimed file
+    base_stem = base_stem:gsub('_retimed$', '')
+    return table.concat { base_stem, '_retimed', ext }
 end
 
 local function engine_is_set()
@@ -177,14 +270,14 @@ local function extract_to_file(subtitle_track)
     return temp_sub_fp
 end
 
-local function sync_subtitles(ref_sub_path)
+local function sync_subtitles(ref_sub_path, force_engine)
     local reference_file_path = ref_sub_path or mp.get_property("path")
     local _, sub_track = get_active_track('sub')
     if sub_track == nil then
         return
     end
     local subtitle_path = sub_track.external and sub_track['external-filename'] or extract_to_file(sub_track)
-    local engine_name = engine_selector:get_engine_name()
+    local engine_name = force_engine or engine_selector:get_engine_name()
     local engine_path = config[engine_name .. '_path']
 
     if h.is_path(config.ffmpeg_path) and not h.file_exists(engine_path) then
@@ -212,11 +305,32 @@ local function sync_subtitles(ref_sub_path)
 
     local ret
     if engine_name == "ffsubsync" then
-        local args = { config.ffsubsync_path, reference_file_path, "-i", subtitle_path, "-o", retimed_subtitle_path }
+        local ref = reference_file_path
+        local extra = {}
         if not ref_sub_path then
-            table.insert(args, '--reference-stream')
-            table.insert(args, '0:' .. get_active_track('audio'))
+            -- Audio reference. Decoding the audio is the expensive part (it
+            -- scales with audio weight/duration), so cache the extracted speech
+            -- as a .npz (ffsubsync --serialize-speech). Later syncs pass the
+            -- .npz as the reference and ffsubsync loads it directly (instant,
+            -- no audio decode). The .npz lives in the per-video cache dir, keyed
+            -- by path+size+mtime; a symlink keeps ffsubsync from writing into
+            -- the media folder.
+            local dir = video_ref_dir()
+            subprocess({ "mkdir", "-p", dir })
+            local npz = dir .. "/video.npz"
+            if utils.file_info(npz) then
+                ref = npz
+            else
+                local link = dir .. "/video.mkv"
+                subprocess({ "ln", "-sf", reference_file_path, link })
+                ref = link
+                table.insert(extra, "--serialize-speech")
+                table.insert(extra, "--reference-stream")
+                table.insert(extra, "0:" .. get_active_track('audio'))
+            end
         end
+        local args = { config.ffsubsync_path, ref, "-i", subtitle_path, "-o", retimed_subtitle_path }
+        for _, a in ipairs(extra) do table.insert(args, a) end
         ret = subprocess(args)
     else
         ret = subprocess { config.alass_path, reference_file_path, subtitle_path, retimed_subtitle_path }
@@ -227,6 +341,14 @@ local function sync_subtitles(ref_sub_path)
     end
 
     if ret.status == 0 then
+        -- Cache the offset+framerate so the rest of this show's episodes can
+        -- reuse it instantly (only ffsubsync reports a clean global transform).
+        if engine_name == "ffsubsync" then
+            -- ffsubsync logs its result to stderr, not stdout
+            local offset, scale = parse_ffsubsync_transform(
+                    (ret.stdout or "") .. "\n" .. (ret.stderr or ""))
+            if offset then save_show_transform(offset, scale) end
+        end
         local old_sid = mp.get_property("sid")
         if mp.commandv("sub_add", retimed_subtitle_path) then
             notify("Subtitle synchronized.", nil, 2)
@@ -291,6 +413,309 @@ local function sync_to_manual_offset()
     end
     mp.set_property("sub-delay", 0)
     return notify(string.format("Manual timings saved, loading '%s'", s.filename), "info", 7)
+end
+
+------------------------------------------------------------
+-- Automatic sync: prefer an embedded TEXT subtitle as the reference (fast,
+-- no audio/video decode, low RAM even on huge remuxes); only fall back to
+-- audio when the file has no usable embedded text subtitle.
+
+-- Text subtitle codecs extract_to_file can turn into a reference (bitmap
+-- subs like PGS/DVD are image-based and unusable for text alignment).
+local TEXT_SUB_CODECS = { subrip = true, ass = true }
+
+-- Count dialogue cues in an .ass/.srt to judge how "full" a subtitle is.
+local function count_cues(path)
+    local f = io.open(path, "r")
+    if not f then return 0 end
+    local n = 0
+    for line in f:lines() do
+        if line:find("^Dialogue:", 1) or line:match("^%d+%s*$") then n = n + 1 end
+    end
+    f:close()
+    return n
+end
+
+-- Reference cache: extracting an embedded subtitle means ffmpeg traverses the
+-- (possibly huge, possibly cold-on-NFS) file once. The embedded subs of a given
+-- video never change, so extract them ONCE per video (single ffmpeg pass for
+-- all tracks) into a cache dir keyed by path+size+mtime, and reuse forever.
+-- Re-syncs and replays then cost milliseconds instead of a full file traversal.
+local REF_EXT = { subrip = "srt", ass = "ass" }
+
+local function read_ref_manifest(dir)
+    local mf = io.open(dir .. "/manifest.json", "r")
+    if not mf then return nil end
+    local raw = mf:read("*a"); mf:close()
+    local list = utils.parse_json(raw)
+    if type(list) ~= "table" or #list == 0 then return nil end
+    for _, r in ipairs(list) do
+        if not utils.file_info(dir .. "/" .. r.file) then return nil end
+    end
+    return list
+end
+
+-- Extract every embedded text subtitle in ONE ffmpeg pass (one traversal of
+-- the input, all outputs written together) and cache them with a manifest.
+local function extract_all_refs(dir, exclude_id)
+    local tracks = {}
+    for _, t in ipairs(get_loaded_tracks('sub')) do
+        if (not t.external) and TEXT_SUB_CODECS[t.codec] and t.id ~= exclude_id then
+            table.insert(tracks, t)
+        end
+    end
+    if #tracks == 0 then return {} end
+    subprocess({ "mkdir", "-p", dir })
+    local args = {
+        config.ffmpeg_path, "-hide_banner", "-nostdin", "-y", "-loglevel", "quiet",
+        "-analyzeduration", "100000", "-probesize", "5000000",
+        "-an", "-vn", "-i", mp.get_property("path"),
+    }
+    for _, t in ipairs(tracks) do
+        local ext = REF_EXT[t.codec] or "ass"
+        t._ref_file = t.id .. "." .. ext
+        table.insert(args, "-map"); table.insert(args, "0:" .. t['ff-index'])
+        table.insert(args, "-f"); table.insert(args, ext)
+        table.insert(args, dir .. "/" .. t._ref_file)
+    end
+    local ret = subprocess(args)
+    if ret == nil or ret.status ~= 0 then return {} end
+    local list = {}
+    for _, t in ipairs(tracks) do
+        if utils.file_info(dir .. "/" .. t._ref_file) then
+            table.insert(list, {
+                id = t.id, lang = t.lang, codec = t.codec,
+                file = t._ref_file, cues = count_cues(dir .. "/" .. t._ref_file),
+            })
+        end
+    end
+    local mf = io.open(dir .. "/manifest.json", "w")
+    if mf then mf:write(utils.format_json(list)); mf:close() end
+    return list
+end
+
+-- Cached list of embedded reference subs: {id, lang, codec, file, cues, path}.
+local function get_embedded_refs(exclude_id)
+    local dir = video_ref_dir()
+    local list = read_ref_manifest(dir) or extract_all_refs(dir, exclude_id)
+    for _, r in ipairs(list) do
+        r.path = dir .. "/" .. r.file
+    end
+    return list
+end
+
+-- Fast subtitle<->subtitle sync to the best (most-cues) embedded sub. Returns
+-- true on a completed sync. If gate_min_cues is set, a too-sparse reference
+-- (signs/songs) is rejected (returns false) so the caller can fall back.
+local function sync_to_best_embedded(gate_min_cues, exclude_id)
+    local _, active = get_active_track('sub')
+    if active == nil then return false end
+    local refs = get_embedded_refs(exclude_id or active.id)
+    if #refs == 0 then return false end
+    -- Prefer an English reference (the usual full-dialogue sub) over other
+    -- languages: picking by raw cue count alone can choose e.g. a Chinese
+    -- track, which aligns Arabic to the wrong language's timing.
+    local best = nil
+    for _, r in ipairs(refs) do
+        if (r.lang or ""):lower():sub(1, 2) == "en" then
+            if not best or r.cues > best.cues then best = r end
+        end
+    end
+    if not best then
+        best = refs[1]
+        for _, r in ipairs(refs) do
+            if r.cues > best.cues then best = r end
+        end
+    end
+    if gate_min_cues and best.cues < gate_min_cues then
+        notify(string.format("Embedded sub too sparse to auto-sync (%d cues); press n for audio.", best.cues), "info", 4)
+        return false
+    end
+    notify(string.format("Syncing to embedded sub #%s (%s, %d cues)...",
+            best.id, best.lang or "?", best.cues), nil, 2)
+    -- alass: fast per-episode subtitle sync. NOTE: we deliberately do NOT cache
+    -- a show transform from subtitle refs -- on sparse refs (e.g. Lain's forced
+    -- sub) the detected offset flips sign per episode (E02=+30.56, E03=-33.38),
+    -- so caching it would propagate garbage. The reliable per-show transform
+    -- comes from the audio path (ffsubsync), which sync_subtitles caches.
+    sync_subtitles(best.path, config.altsub_subsync_tool ~= "ask" and config.altsub_subsync_tool or "alass")
+    return true
+end
+
+------------------------------------------------------------
+-- Apply a cached show transform (offset + framerate scale) directly to the
+-- loaded subtitle's timestamps. Pure string math -- no ffsubsync, no file
+-- traversal. This is what makes episodes 2..N of a show sync in milliseconds.
+
+local function ass_time_to_sec(t)
+    local h, m, s, cs = t:match("(%d+):(%d+):(%d+)%.(%d+)")
+    if not h then return nil end
+    return h * 3600 + m * 60 + s + cs / 100
+end
+
+local function sec_to_ass_time(x)
+    if x < 0 then x = 0 end
+    local cs = math.floor(x * 100 + 0.5)
+    local h = math.floor(cs / 360000); cs = cs % 360000
+    local m = math.floor(cs / 60000); cs = cs % 60000
+    local s = math.floor(cs / 100); cs = cs % 100
+    return string.format("%d:%02d:%02d.%02d", h, m, s, cs)
+end
+
+local function sec_to_srt_time(x)
+    if x < 0 then x = 0 end
+    local ms = math.floor(x * 1000 + 0.5)
+    local h = math.floor(ms / 3600000); ms = ms % 3600000
+    local m = math.floor(ms / 60000); ms = ms % 60000
+    local s = math.floor(ms / 1000); ms = ms % 1000
+    return string.format("%02d:%02d:%02d,%03d", h, m, s, ms)
+end
+
+-- ASS: "Dialogue: Marked,Start,End,Style,Name,ML,MR,MV,Effect,Text" -- shift
+-- fields 2 and 3 (the first 9 commas delimit fields; text may contain commas).
+local function transform_ass(content, offset, scale)
+    local out = {}
+    -- ([^\n]*)\n over content.."\n" yields each line exactly once (the gmatch
+    -- pattern "[^\r\n]*" alone also matches every empty position and doubles).
+    for line in (content .. "\n"):gmatch("([^\n]*)\n") do
+        line = line:gsub("\r$", "")
+        if line:sub(1, 9) == "Dialogue:" then
+            local parts, rest, ok = {}, line, true
+            for i = 1, 9 do
+                local c = rest:find(",", 1, true)
+                if not c then ok = false; break end
+                parts[i] = rest:sub(1, c - 1)
+                rest = rest:sub(c + 1)
+            end
+            if ok then
+                local st = ass_time_to_sec(parts[2])
+                local en = ass_time_to_sec(parts[3])
+                if st and en then
+                    parts[2] = sec_to_ass_time(st * scale + offset)
+                    parts[3] = sec_to_ass_time(en * scale + offset)
+                    line = table.concat(parts, ",") .. "," .. rest
+                end
+            end
+        end
+        table.insert(out, line)
+    end
+    -- drop the single trailing empty line our added "\n" produces
+    if out[#out] == "" then out[#out] = nil end
+    return table.concat(out, "\n")
+end
+
+local function transform_srt(content, offset, scale)
+    return (content:gsub("(%d%d):(%d%d):(%d%d)[,%.](%d%d%d)", function(h, m, s, ms)
+        local x = (h * 3600 + m * 60 + s + ms / 1000) * scale + offset
+        return sec_to_srt_time(x)
+    end))
+end
+
+-- Apply the cached show transform to the active external subtitle. Returns true
+-- if a retimed sub was produced and loaded.
+local function apply_cached_transform()
+    local t = load_show_transform()
+    if not t then return false end
+    local _, active = get_active_track('sub')
+    if not active or not active.external then return false end
+    local src = url_decode(active['external-filename'] or '') or ''
+    if src == '' or src:find('_retimed', 1, true) or not utils.file_info(src) then return false end
+    local f = io.open(src, "r")
+    if not f then return false end
+    local content = f:read("*a"); f:close()
+    local ext = get_extension(src) or ".ass"
+    local out_content
+    if ext == ".srt" then
+        out_content = transform_srt(content, t.offset, t.scale)
+    else
+        out_content = transform_ass(content, t.offset, t.scale)
+    end
+    local out_path = remove_extension(src) .. "_retimed" .. ext
+    local of = io.open(out_path, "w")
+    if not of then return false end
+    of:write(out_content); of:close()
+    notify(string.format("Applying cached show sync (offset %+.2fs, scale %.4f)...",
+            t.offset, t.scale), nil, 2)
+    local old_sid = mp.get_property("sid")
+    if mp.commandv("sub_add", out_path) then
+        mp.set_property("sub-delay", 0)
+        if config.unload_old_sub then mp.commandv("sub_remove", old_sid) end
+        notify("Subtitle synchronized (cached).", nil, 2)
+        return true
+    end
+    return false
+end
+
+local function sync_to_audio()
+    notify("Syncing to audio...", nil, 2)
+    sync_subtitles(nil, config.audio_subsync_tool ~= "ask" and config.audio_subsync_tool or "ffsubsync")
+end
+
+-- `n`: force a fresh sync (recompute the show transform), embedded then audio.
+local function auto_sync()
+    -- An embedded subtitle is already muxed/timed to this video -- syncing it
+    -- is pointless (and would retiming a known-good track to a possibly-worse
+    -- reference). Only external (downloaded) subs need syncing.
+    local _, active = get_active_track('sub')
+    if active and not active.external then
+        notify("Active subtitle is embedded (already timed); nothing to sync.", "info", 3)
+        return
+    end
+    if not sync_to_best_embedded(nil) then
+        sync_to_audio()
+    end
+end
+
+-- True when the active audio is cheap to decode (not a long lossless track).
+-- Keeps the automatic audio-seed from triggering a multi-minute decode on a
+-- long TrueHD/DTS/FLAC 4K file.
+local function audio_is_cheap()
+    local dur = tonumber(mp.get_property("duration")) or 0
+    for _, t in ipairs(mp.get_property_native("track-list")) do
+        if t.type == "audio" and t.selected then
+            local c = (t.codec or ""):lower()
+            local lossless = c:find("truehd") or c:find("dts") or c:find("flac") or c:find("pcm")
+            if lossless and dur > 2400 then return false end
+            return true
+        end
+    end
+    return true
+end
+
+-- On-load auto sync:
+--   1. cached show transform present -> apply it (milliseconds, no file access);
+--   2. else, if audio-seed is allowed and the audio is cheap -> audio sync once
+--      (ffsubsync caches the reliable per-show transform; every later episode
+--      of the show hits step 1);
+--   3. else -> fast per-episode embedded-subtitle sync (alass, no caching).
+local synced_paths = {}
+local auto_timer = nil
+local function auto_sync_on_load()
+    if apply_cached_transform() then
+        return
+    end
+    if config.auto_sync_audio and audio_is_cheap() then
+        sync_to_audio()
+        return
+    end
+    sync_to_best_embedded(config.auto_sync_min_cues)
+end
+
+local function on_sid_changed()
+    if not config.auto_sync_on_load then return end
+    local sid = mp.get_property_native('sid')
+    if not sid or sid == 0 then return end
+    local track
+    for _, t in ipairs(mp.get_property_native('track-list')) do
+        if t.type == 'sub' and t.id == sid then track = t; break end
+    end
+    if not track or not track.external then return end
+    local path = url_decode(track['external-filename'] or '') or ''
+    if path == '' or path:find('_retimed', 1, true) then return end
+    if synced_paths[path] then return end
+    synced_paths[path] = true
+    if auto_timer then auto_timer:kill() end
+    auto_timer = mp.add_timeout(config.auto_sync_delay, auto_sync_on_load)
 end
 
 ------------------------------------------------------------
@@ -506,4 +931,11 @@ end
 -- Entry point
 
 init()
-mp.add_key_binding("n", "autosubsync-menu", function() ref_selector:open() end)
+-- n = automatic sync (embedded text sub if present, else audio).
+-- ctrl+n = the old interactive menu for manual reference/engine selection.
+mp.add_key_binding("n", "autosubsync-auto", auto_sync)
+mp.add_key_binding("ctrl+n", "autosubsync-menu", function() ref_selector:open() end)
+
+-- Auto-sync a subtitle as soon as it gets selected (e.g. when subdl_ar loads
+-- the Arabic track). Fires only for external, non-retimed tracks, once each.
+mp.observe_property("sid", "native", on_sid_changed)
