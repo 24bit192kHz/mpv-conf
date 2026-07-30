@@ -681,8 +681,10 @@ local function apply_cached_transform()
     return false
 end
 
-local function sync_to_audio()
-    notify("Syncing to audio...", nil, 2)
+-- Auto-reference sync: let sync_subtitles pick the cheapest viable reference
+-- (embedded sub if dense enough, cached .npz, then bounded audio VAD). Kept
+-- as a named wrapper so the on-load path can be read at a glance.
+local function sync_via_ffsubsync()
     sync_subtitles(nil, config.audio_subsync_tool ~= "ask" and config.audio_subsync_tool or "ffsubsync")
 end
 
@@ -697,7 +699,7 @@ local function auto_sync()
         return
     end
     if not sync_to_best_embedded(nil) then
-        sync_to_audio()
+        sync_via_ffsubsync()
     end
 end
 
@@ -743,7 +745,7 @@ local function auto_sync_on_load()
         return
     end
     if config.auto_sync_audio and audio_is_cheap() then
-        sync_to_audio()
+        sync_via_ffsubsync()
         return
     end
     sync_to_best_embedded(config.auto_sync_min_cues)
