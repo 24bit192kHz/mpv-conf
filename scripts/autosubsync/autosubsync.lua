@@ -142,22 +142,35 @@ local function video_ref_dir()
     return REF_CACHE_DIR .. "/" .. djb2_hex(path .. "|" .. size .. "|" .. mtime)
 end
 
--- Show-level sync-transform cache. For a series (same source/release) the
--- offset + framerate scale between the downloaded sub and the video is the
--- same for every episode, so we compute it ONCE (first episode) and reuse it
--- for the rest -- applying it is pure timestamp math (milliseconds), with no
--- file traversal or ffsubsync run. Keyed by the containing folder.
+-- Per-episode sync-transform cache. SubDL returns a DIFFERENT Arabic sub
+-- release per episode (Lain E01 = coalgirls-720p-sub, E07 = coalgirls-1080p
+-- sub from a different SubDL author; Deadman E01 = "s.t.s" E02-04 = "sts
+-- horrible"; the offsets of these subs against their episodes are
+-- independent -- Lain E01 needed +0.72s while E07 needed +119.62s against
+-- the same coalgirls BD). Caching the FIRST episode's offset and reusing
+-- it on later episodes silently mistimes them.
+--
+-- So: key the cache on the video file's identity (path+size+mtime -- same
+-- hash as video_ref_dir, so a cache-cleared-file's transform disappears
+-- alongside its extracted refs). First play of each episode pays the ~1s
+-- extract+ffsubsync cost; subsequent plays of the SAME file are instant
+-- (pure offset+scale string math -- no extraction / no ffsubsync).
 local TRANSFORM_DIR = (os.getenv("HOME") or "/tmp") .. "/.cache/autosubsync/transforms"
 
-local function show_key()
+local function episode_key()
+    -- Same identity hashing as video_ref_dir (path|size|mtime) so that
+    -- touching/moving/replacing the file invalidates the cache and the
+    -- extracted refs together.
     local path = mp.get_property("path") or ""
-    local dir = path:match("^(.*)/[^/]*$") or path
-    return djb2_hex(dir)
+    local info = utils.file_info(path)
+    local size = info and info.size or 0
+    local mtime = info and info.mtime or 0
+    return djb2_hex(path .. "|" .. size .. "|" .. mtime)
 end
 
 local function load_show_transform()
     if not config.cache_show_transform then return nil end
-    local f = io.open(TRANSFORM_DIR .. "/" .. show_key() .. ".json", "r")
+    local f = io.open(TRANSFORM_DIR .. "/" .. episode_key() .. ".json", "r")
     if not f then return nil end
     local raw = f:read("*a"); f:close()
     local t = utils.parse_json(raw)
@@ -168,7 +181,7 @@ local function load_show_transform()
     -- cached offset+scale would silently reapply a stale transform on the
     -- next play. Reject the entry so the next run recomputes from scratch.
     if type(t.retimed) == "string" and not utils.file_info(t.retimed) then
-        mp.msg.info("autosubsync: cached show transform's retimed is gone (" ..
+        mp.msg.info("autosubsync: cached episode transform's retimed is gone (" ..
             t.retimed .. "), invalidating cache")
         return nil
     end
@@ -185,7 +198,7 @@ local function save_show_transform(offset, scale, retimed_path)
         scale = 1.0
     end
     subprocess({ "mkdir", "-p", TRANSFORM_DIR })
-    local f = io.open(TRANSFORM_DIR .. "/" .. show_key() .. ".json", "w")
+    local f = io.open(TRANSFORM_DIR .. "/" .. episode_key() .. ".json", "w")
     if f then
         f:write(utils.format_json({
             offset = offset,
@@ -1151,12 +1164,12 @@ init()
 mp.add_key_binding("n", "autosubsync-auto", auto_sync)
 mp.add_key_binding("ctrl+n", "autosubsync-menu", function() ref_selector:open() end)
 mp.add_key_binding("F12", "autosubsync-clear-cache", function()
-    local path = TRANSFORM_DIR .. "/" .. show_key() .. ".json"
+    local path = TRANSFORM_DIR .. "/" .. episode_key() .. ".json"
     os.remove(path)
-    notify("Show transform cache cleared; next sync will recompute.", "info", 3)
+    notify("Episode transform cache cleared; next sync will recompute.", "info", 3)
 end)
 mp.register_script_message("autosubsync-clear-cache", function()
-    local path = TRANSFORM_DIR .. "/" .. show_key() .. ".json"
+    local path = TRANSFORM_DIR .. "/" .. episode_key() .. ".json"
     os.remove(path)
 end)
 
