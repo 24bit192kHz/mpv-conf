@@ -316,25 +316,20 @@ local function sync_subtitles(ref_sub_path, force_engine)
         local ref = reference_file_path
         local extra = {}
         if not ref_sub_path then
-            -- No explicit reference: prefer audio VAD (reliable, sparse-ref
-            -- safe) but skip the slow first-time decode when a *dense*
-            -- embedded text sub is already extracted. A sparse ref (e.g. a
-            -- signs/songs-only track with < 500 cues) gives a noisy offset
-            -- that overwrites a perfectly good audio-VAD cache, so we gate
-            -- on cue count. Falls through to audio VAD -- cached as .npz
-            -- per-video, so only the first sync is slow.
+            -- No explicit reference: prefer the best embedded text sub as
+            -- the ffsubsync reference (sub-to-sub, instant) over audio VAD
+            -- (21s on lossless 4K). Falls back to audio VAD only when no
+            -- usable text sub exists (PGS / image-based) -- cached as .npz
+            -- per video, so only the first sync is slow. The cue gate uses
+            -- auto_sync_min_cues so very sparse refs (signs/songs-only,
+            -- < 100 cues) still get the reliable audio path.
             local dir = video_ref_dir()
             subprocess({ "mkdir", "-p", dir })
 
             local _, active = get_active_track('sub')
             local refs = get_embedded_refs(active and active.id or nil)
             local best = pick_best_embedded_ref(refs)
-            -- A reasonably full embedded dialog track; below this, sub-to-sub
-            -- alignment is unreliable (Lain's signs sub gave 1.18 scale that
-            -- had to be clamped to 1.0 -- still poisoned the per-episode
-            -- offset).
-            local DENSE_REF_CUES = 500
-            if best and best.cues >= DENSE_REF_CUES then
+            if best and best.cues >= config.auto_sync_min_cues then
                 ref = best.path
             else
                 local npz = dir .. "/video.npz"
