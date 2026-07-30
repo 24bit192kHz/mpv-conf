@@ -63,6 +63,11 @@ local config = {
     -- the alignment and the matched offset can be off by tens of seconds.
     -- Off = pass the full .ass through (old behaviour).
     dialogue_only_filter = true,
+    -- ffsubsync --max-offset-seconds. Default 60 -- far too tight for
+    -- release-cut differences (coalgirls BD adds a 2-min recap that an
+    -- Arabic SubDL sub doesn't have -> true offset +120s). 600s = 10 min
+    -- covers recap/Cold-open shifts but rejects garbage far-match anchors.
+    ffsubsync_max_offset = 600,
     -- Seconds to wait after a subtitle is selected before auto-syncing, so
     -- the loader (e.g. subdl_ar) finishes adding tracks first.
     auto_sync_delay = 0.7,
@@ -377,6 +382,13 @@ local function sync_subtitles(ref_sub_path, force_engine)
             end
         end
         local args = { config.ffsubsync_path, ref, "-i", subtitle_path, "-o", retimed_subtitle_path }
+        -- ffsubsync's default --max-offset-seconds is 60 -- far too tight for
+        -- release-cut mismatches (an Arabic sub from SubDL vs the coalgirls
+        -- BD: the BD opens with a 2-minute recap before the episode proper,
+        -- the Arabic sub starts at episode, so the true alignment is +120s).
+        -- Bounded to 600s (10 min) so a recap/OP-shift can be matched but a
+        -- wildly off wrong-language anchor is rejected.
+        table.insert(args, "--max-offset-seconds"); table.insert(args, tostring(config.ffsubsync_max_offset))
         for _, a in ipairs(extra) do table.insert(args, a) end
         ret = subprocess(args)
     else
