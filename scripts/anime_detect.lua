@@ -22,8 +22,9 @@ local cfg = {
   genre_ids = "16",
   min_score = 0.0,
   skip_protocols = "http,https,rtmp,rtsp",
-  -- Require Japanese original language: genre 16 is "Animation" and also
-  -- matches Pixar/Disney/Arcane, which Anime4K's line-art tuning harms.
+  -- Require a Japanese signal (TMDB lang=ja or a ja audio track): genre
+  -- 16 is "Animation" and also matches Pixar/Disney/Arcane, which
+  -- Anime4K's line-art tuning harms.
   japanese_only = "yes",
   debug = "no",
 }
@@ -77,12 +78,36 @@ local cache = {}
 -- inflight: normalized-title -> boolean (prevent re-entrancy)
 local inflight = {}
 
+-- Scene-name noise (Lua patterns have no alternation, so: loops, and %f[]
+-- frontiers so tokens only match as whole words).
+local SCENE_COMPOUNDS = { -- codec/source glued to a release-group suffix
+  "x264", "x265", "h264", "h265", "h%.264", "h%.265", "hevc", "av1",
+  "bluray", "webdl", "web", "remux", "%d%d%d%d?p",
+}
+local SCENE_TOKENS = {
+  "hdr", "sdr", "uhd", "webdl", "webrip", "web", "bluray", "blu%-ray",
+  "bdrip", "bdremux", "remux", "x264", "x265", "h264", "h265", "hevc",
+  "avc", "av1", "10bit", "8bit", "flac", "opus", "aac", "eac3", "ac3",
+  "dts", "atmos", "truehd", "dual", "audio", "proper", "repack",
+  "amzn", "nf", "hulu", "dsnp",
+}
+
 local function normalize(s)
   s = s:lower()
   s = s:gsub("^%[[^%]]*%]%s*", "")
   s = s:gsub("%[[^%]]*%]", " ")
   s = s:gsub("%b()", " ")
-  s = s:gsub("%d{3,4}p", " ")
+  -- scene-style codec/source-group compounds (h265-cakes, x264-ntb, 2160p-grp)
+  for _, c in ipairs(SCENE_COMPOUNDS) do
+    s = s:gsub(c .. "%-[a-z0-9]+", " ")
+  end
+  -- resolution (Lua patterns have no {n,m}: %d{3,4}p matched literally, so
+  -- unbracketed 1080p/2160p used to leak into the TMDB query)
+  s = s:gsub("%d%d%d%d?p", " ")
+  -- common scene/release tokens
+  for _, tok in ipairs(SCENE_TOKENS) do
+    s = s:gsub("%f[%w]" .. tok .. "%f[%W]", " ")
+  end
   -- strip episode markers: S01E12, S01xE12, E12, etc.
   s = s:gsub("[%s%-_]*s?%d?%d[xXeE]%d+[%s%-_]*", " ")
   -- strip version suffix like "v2" on episodes: "S01E03v2" tail or standalone "v2"
@@ -129,6 +154,19 @@ local function curl_json(url, cb)
     end
     cb(parsed)
   end)
+end
+
+-- The file's own tracks: any Japanese audio track is the strongest anime
+-- signal available -- offline, instant, and settles co-productions TMDB
+-- tags en (Cyberpunk: Edgerunners ships ja audio as aid=1).
+local function has_japanese_audio()
+  for _, t in ipairs(mp.get_property_native("track-list", {})) do
+    local lang = t.lang or ""
+    if t.type == "audio" and (lang == "ja" or lang == "jpn" or lang:sub(1, 3) == "ja-") then
+      return true
+    end
+  end
+  return false
 end
 
 local function probe(raw_title)
@@ -196,29 +234,18 @@ local function probe(raw_title)
       finalize(false, best.original_language)
       return
     end
-    if cfg.japanese_only ~= "yes" or best.original_language == "ja" then
-      finalize(true, best.original_language)
+    -- Japanese gate: TMDB lang=ja OR a Japanese audio track in the file.
+    -- The audio check catches co-productions TMDB tags en (Edgerunners)
+    -- with no extra API call; western animation (Castlevania, Arcane)
+    -- has neither and stays excluded. Live-action with ja audio never
+    -- reaches here -- it fails the Animation genre gate.
+    if cfg.japanese_only == "yes"
+      and best.original_language ~= "ja"
+      and not has_japanese_audio() then
+      finalize(false, best.original_language)
       return
     end
-    if best.media_type == "tv" then
-      -- Japanese gate vs co-productions: TMDB tags e.g. Cyberpunk
-      -- Edgerunners as lang=en (CD Projekt IP), but origin_country
-      -- (details endpoint only) carries JP. One extra light call,
-      -- only for genre-matching non-ja shows.
-      curl_json(string.format("https://api.themoviedb.org/3/tv/%s?api_key=%s",
-          best.id, cfg.tmdb_api_key), function(d)
-        local jp = false
-        if d and type(d.origin_country) == "table" then
-          for _, c in ipairs(d.origin_country) do
-            if c == "JP" then jp = true break end
-          end
-        end
-        finalize(jp, (best.original_language or "?") .. (jp and "+JP" or ""))
-      end)
-      return
-    end
-    -- Non-ja animation movies (Pixar etc.) stay off the anime path.
-    finalize(false, best.original_language)
+    finalize(true, best.original_language)
   end)
 end
 
