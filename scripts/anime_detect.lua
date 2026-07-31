@@ -68,6 +68,10 @@ local function log(...)
   mp.msg.info("[anime_detect] " .. table.concat(args, " "))
 end
 
+-- Transport failures get one retry (then a visible warning); genuine
+-- empty TMDB results ("no match") do not retry.
+local retry_done = {}
+
 -- session cache: normalized-title -> bool
 local cache = {}
 -- inflight: normalized-title -> boolean (prevent re-entrancy)
@@ -147,6 +151,16 @@ local function probe(raw_title)
   curl_json(url, function(j)
     inflight[norm] = nil
     if not j or not j.results or #j.results == 0 then
+      if not j and not retry_done[norm] then
+        -- Transport failure (curl/TMDB hiccup): one retry, made visible.
+        retry_done[norm] = true
+        mp.msg.warn("anime_detect: TMDB lookup failed, retrying once")
+        mp.add_timeout(2, function() probe(raw_title) end)
+        return
+      end
+      if not j then
+        mp.msg.warn("anime_detect: TMDB unreachable; anime detection skipped for this file")
+      end
       cache[norm] = false
       mp.set_property("user-data/anime_detect/is_anime", "0")
       return
