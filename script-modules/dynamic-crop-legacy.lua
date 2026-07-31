@@ -99,7 +99,11 @@ local options = {
     -- verbose
     debug = false
 }
-read_options(options)
+-- Own identifier: this file is dofile'd by dynamic-crop.lua, so an
+-- unnamed read_options would share the parent's "dynamic_crop" prefix
+-- and its CUDA-tuned detect_limit=2 would clobber the cropdetect
+-- threshold (default 26) below.
+read_options(options, "dynamic_crop_legacy")
 
 if options.mode == 0 then
     mp.msg.info("mode = 0, disable script.")
