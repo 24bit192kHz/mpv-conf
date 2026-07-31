@@ -152,10 +152,11 @@ local function subprocess(args)
     }
 end
 
--- All autosubsync state lives under the ar_subs cache root (one directory
--- for the whole Arabic-subtitle workflow: downloads, retimed files, refs,
--- transforms, slow-show marks).
-local CACHE_BASE = (os.getenv("HOME") or "/tmp") .. "/.cache/ar_subs/autosubsync"
+-- All autosubsync state lives under the shared mpv cache root, sibling of
+-- ar_subs (refs, transforms, slow-show marks). rm -rf ~/.cache/mpv resets
+-- the whole Arabic-subtitle workflow -- downloads, retimed files and
+-- cached transforms -- in one shot.
+local CACHE_BASE = (os.getenv("XDG_CACHE_HOME") or (os.getenv("HOME") or "/tmp") .. "/.cache") .. "/mpv/autosubsync"
 
 -- Per-video cache dir (keyed by path+size+mtime) for extracted references and
 -- serialized speech. Defined early because sync_subtitles uses it for the
@@ -213,7 +214,7 @@ local function load_show_transform()
     if type(t) ~= "table" or type(t.offset) ~= "number" then return nil end
     if type(t.scale) ~= "number" then t.scale = 1.0 end
     -- Tie the cache to the retimed file it produced: if the user wipes the
-    -- subdl cache (rm -rf .cache/ar_subs) the retimed is gone too, and the
+    -- subdl cache (rm -rf ~/.cache/mpv) the retimed is gone too, and the
     -- cached offset+scale would silently reapply a stale transform on the
     -- next play. Reject the entry so the next run recomputes from scratch.
     if type(t.retimed) == "string" and not utils.file_info(t.retimed) then

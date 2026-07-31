@@ -62,7 +62,9 @@ local dotenv = _cfg.dotenv
 local env_config = _cfg.env
 local config = _cfg.opts
 
-local CACHE_DIR = os.getenv("HOME") .. "/.cache/ar_subs"
+-- All ar_subs state lives under the shared mpv cache root so a single
+-- rm -rf ~/.cache/mpv resets the whole workflow (subs, search db, hot files).
+local CACHE_DIR = (os.getenv("XDG_CACHE_HOME") or (os.getenv("HOME") or "/tmp") .. "/.cache") .. "/mpv/ar_subs"
 local CACHE_FILE = CACHE_DIR .. "/cache.json"
 local SUBS_DIR = CACHE_DIR .. "/subtitles"
 local SUBDL_API_KEY = trim(config.subdl_api_key) ~= "" and config.subdl_api_key or env_config.subdl_api_key

@@ -134,7 +134,7 @@ local hot_dir_cached
 
 M.hot_dir = function()
     if not hot_dir_cached then
-        hot_dir_cached = (os.getenv("HOME") or "/tmp") .. "/.cache/ar_subs/hot"
+        hot_dir_cached = (os.getenv("XDG_CACHE_HOME") or (os.getenv("HOME") or "/tmp") .. "/.cache") .. "/mpv/ar_subs/hot"
         os.execute("mkdir -p " .. hot_dir_cached)
     end
     return hot_dir_cached

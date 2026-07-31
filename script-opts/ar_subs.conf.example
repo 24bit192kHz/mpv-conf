@@ -11,7 +11,7 @@ use_tvdb_cour=no
 subsource_api_key=
 
 # Season search cache: one search per show/season is stored zstd-compressed in
-# the SQLite cache (~/.cache/ar_subs/cache.db); later episodes of the season
+# the SQLite cache (~/.cache/mpv/ar_subs/cache.db); later episodes of the season
 # filter the cached pool with zero search API calls. TTL in days; 0 disables.
 search_cache_ttl_days=30
 

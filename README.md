@@ -19,7 +19,7 @@ video automatically. Three sources, tried in this order:
 
 Fetched subs are stored compressed at rest (`.ass.zst` / `.srt.zst`,
 zstd-19 via in-process LuaJIT FFI — no subprocess) under one cache root
-`~/.cache/ar_subs/`, decompressed into an LRU `hot/` dir on load in
+`~/.cache/mpv/ar_subs/`, decompressed into an LRU `hot/` dir on load in
 sub-milliseconds. Episode matching, season-pack unpacking, and a per-season
 search cache (SQLite + zstd) are shared by all three sources.
 
