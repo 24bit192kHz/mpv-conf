@@ -163,6 +163,37 @@ local CACHE_BASE = (os.getenv("XDG_CACHE_HOME") or (os.getenv("HOME") or "/tmp")
 -- audio-speech cache.
 local REF_CACHE_DIR = CACHE_BASE .. "/refs"
 
+-- Refs are stored zstd-compressed at rest (subtitle text shrinks ~90%) and
+-- decompressed on demand into a hot dir (in-process LuaJIT FFI via the
+-- shared ar_subs zstd module -- sub-millisecond for a ~100 KB track).
+-- Manifests keep LOGICAL names ("3.ass"); plain_ref resolves them to the
+-- .zst on disk, so legacy uncompressed caches keep working untouched.
+do
+    local _modules_dir = mp.command_native({"expand-path", "~~/script-modules"})
+    package.path = _modules_dir .. "/?.lua;" .. _modules_dir .. "/?/init.lua;" .. package.path
+end
+local zstd = require "ar_subs.util.zstd"
+zstd.init(mp)
+
+local REF_HOT_DIR = CACHE_BASE .. "/hot"
+local ref_hot_ready = false
+
+local function plain_ref(path)
+    if utils.file_info(path) then return path end
+    local zst = path .. ".zst"
+    if not zstd.available() or not utils.file_info(zst) then return path end
+    if not ref_hot_ready then
+        subprocess({ "mkdir", "-p", REF_HOT_DIR })
+        ref_hot_ready = true
+    end
+    -- Per-video dirs reuse names (1.ass, 2.srt): prefix with the dir hash.
+    local dirhash, name = path:match("/([^/]+)/([^/]+)$")
+    local out = REF_HOT_DIR .. "/" .. (dirhash or "x") .. "_" .. (name or "ref")
+    if utils.file_info(out) then return out end
+    if zstd.decompress_file(zst, out) then return out end
+    return path
+end
+
 local function djb2_hex(s)
     local h = 5381
     for i = 1, #s do
@@ -306,6 +337,7 @@ local WINDOW_LADDER = { 120, 180, 300, 450, 600, 900 }
 -- stamp on the same line is not matched -- match() takes the first hit).
 -- ASS: field 2 of each Dialogue line.
 local function cue_start_times(path)
+    path = plain_ref(path)
     local times = {}
     local f = io.open(path, "r")
     if not f then return times end
@@ -742,6 +774,7 @@ local TEXT_SUB_CODECS = { subrip = true, ass = true }
 
 -- Count dialogue cues in an .ass/.srt to judge how "full" a subtitle is.
 count_cues = function(path)
+    path = plain_ref(path)
     local f = io.open(path, "r")
     if not f then return 0 end
     local n = 0
@@ -814,6 +847,7 @@ end
 -- "default forced" track is 286 cues total but only 201 dialogue; the other
 -- 85 are the typewriter title-card + OP + ED.
 count_dialogue_cues = function(path)
+    path = plain_ref(path)
     local lowered = path:lower()
     if lowered:sub(-4) ~= ".ass" then return count_cues(path) end
     local f = io.open(path, "r")
@@ -836,6 +870,7 @@ end
 -- filter is disabled. The output sits next to the source at "<base>.dlg.ass"
 -- in the cached ref dir so it sticks between runs (it's only ~30 KB).
 dialogue_only_ass = function(path)
+    path = plain_ref(path)
     if not config.dialogue_only_filter then return path end
     if path:lower():sub(-4) ~= ".ass" then return path end
     local f = io.open(path, "r")
@@ -943,6 +978,13 @@ local function extract_all_refs(dir, exclude_id, window)
     if mf then
         mf:write(utils.format_json({ window = window or 0, tracks = list }))
         mf:close()
+    end
+    -- Compress at rest; cue counts above were taken from the raw files and
+    -- the manifest keeps logical names (plain_ref resolves on read).
+    if zstd.available() then
+        for _, r in ipairs(list) do
+            zstd.archive_in_place(dir .. "/" .. r.file)
+        end
     end
     return list
 end
@@ -1079,6 +1121,11 @@ prefetch_next = function()
         if mf then
             mf:write(utils.format_json({ window = 0, tracks = list }))
             mf:close()
+        end
+        if zstd.available() then
+            for _, p in ipairs(list) do
+                zstd.archive_in_place(dir .. "/" .. p.file)
+            end
         end
         mp.msg.info("autosubsync: prefetched refs ready: " .. nxt)
     end)
