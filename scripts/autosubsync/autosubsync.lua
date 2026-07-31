@@ -24,6 +24,7 @@ local count_cues
 local show_marked_slow
 local mark_show_slow
 local prefetch_next
+local prefetch_pending
 local read_ref_manifest
 
 -- Config
@@ -968,8 +969,6 @@ end
 -- Next-episode prefetch: extract the embedded refs of the next file in the
 -- same folder in the background while this episode plays, so its first-play
 -- sync hits a warm manifest (instant) instead of paying the cold traversal.
-
-local prefetch_pending = false
 
 -- Episode number = the highest-scoring digit run in the stem, NOT the last:
 -- "Lain E07 Society 1080p ... x264" ends in 264. Scoring: an E/e prefix
