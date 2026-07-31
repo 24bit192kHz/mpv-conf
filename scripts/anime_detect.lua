@@ -26,6 +26,12 @@ local cfg = {
 }
 options.read_options(cfg, "anime_detect")
 
+-- Fall back to the env var so the key can live in the gitignored .env
+-- instead of script-opts/anime_detect.conf.
+if cfg.tmdb_api_key == "" then
+  cfg.tmdb_api_key = os.getenv("TMDB_API_KEY") or ""
+end
+
 -- genres table { [16] = true, ... }
 local genres = {}
 cfg.genre_ids:gsub("([^,]+)", function(s) s = tonumber(s:match("%S+")); if s then genres[s] = true end end)

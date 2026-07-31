@@ -37,9 +37,16 @@ function M.build_menu(subs)
     return (a.score or 0) > (b.score or 0)
   end)
 
+  -- The download handler indexes the ORIGINAL (unsorted) list, so each
+  -- menu item must carry the original position, not the display index.
+  local original_index = {}
+  for i, sub in ipairs(subs) do
+    original_index[sub] = i
+  end
+
   local items = {}
   for i, sub in ipairs(sorted) do
-    items[i] = M.format_item(sub, i)
+    items[i] = M.format_item(sub, original_index[sub] or i)
   end
 
   return {

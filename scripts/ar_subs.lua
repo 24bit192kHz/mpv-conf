@@ -2373,9 +2373,13 @@ end)
 mp.add_key_binding("Ctrl+V", "ar_subs_toggle_deep", toggle_deep_search)
 mp.add_key_binding("Alt+V", "ar_subs_search", manual_search)
 mp.add_key_binding("Ctrl+Alt+v", "ar_subs_pick", ar_subs_pick)
-mp.add_key_binding("ctrl+alt+v", "ar_subs_pick_lower", ar_subs_pick)
 mp.register_script_message("ar_subs_search", handle_manual_search)
 mp.register_script_message("ar_subs_download_item", function(index)
+    index = tonumber(index) -- script-message args arrive as strings
+    if not index then
+        mp.osd_message("Invalid subtitle index", 2)
+        return
+    end
     if rate_limit_until and os.time() < rate_limit_until then
         local wait = rate_limit_until - os.time()
         mp.osd_message(string.format("Rate limited, try again in %ds", wait), wait + 1)
