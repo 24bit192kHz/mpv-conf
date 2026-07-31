@@ -1,0 +1,8 @@
+# anime_detect.lua options
+# Copy to anime_detect.conf and fill in the key.
+# Leave tmdb_api_key empty to fall back to the TMDB_API_KEY env var (see .env).
+tmdb_api_key=
+genre_ids=16
+min_score=0.0
+skip_protocols=http,https,rtmp,rtsp
+debug=no

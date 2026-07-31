@@ -2,7 +2,10 @@ script-opts/jellyfin.conf
 script-opts/jellyfin.conf.1
 script-opts/subdl_ar.conf
 script-opts/ar_subs.conf
+script-opts/anime_detect.conf
 script-opts/memo-history.log
+scripts/sponsorblock_shared/sponsorblock.txt
+data/
 .env
 .omo/
 *.save
