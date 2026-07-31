@@ -1,0 +1,29 @@
+subdl_api_key=
+subdl_api_backup_key=
+tmdb_api_key=
+tvdb_api_key=
+use_tvdb_cour=no
+
+# SubSource.net -- preferred ONLINE source. Source order: offline Subscene
+# index (subtitle_api_url, zero quota) -> SubSource -> SubDL (last resort).
+# Key: subsource.net -> My Profile -> generate API key. Limits 60/min,
+# 7200/day. Empty disables the source.
+subsource_api_key=
+
+# Season search cache: one search per show/season is stored zstd-compressed in
+# the SQLite cache (~/.cache/ar_subs/cache.db); later episodes of the season
+# filter the cached pool with zero search API calls. TTL in days; 0 disables.
+search_cache_ttl_days=30
+
+# Offline Subscene Arabic index served by the subtitle-api Docker container.
+# Deployed on the docker LXC: code + compose live in the share itself at
+# /mnt/Subscene arabic dump/subtitle-api (192.168.0.125); a local copy of the
+# sources is at /mnt/my-zfs/dumps/subtitle-api. Checked before any SubDL API
+# call -- a hit loads with zero download quota. If the API is unreachable
+# the script silently falls back to SubDL.
+subtitle_api_url=http://127.0.0.1:8787
+subtitle_api_timeout=10
+
+# Skip fetching when the playing video already has a same-stem external subtitle
+# loaded (the per-episode sibling kept in the folder). Set "no" to always fetch.
+skip_if_sibling_sub=yes
