@@ -1,1 +1,0 @@
-See: https://github.com/mpv-player/mpv/wiki/Language-bindings
