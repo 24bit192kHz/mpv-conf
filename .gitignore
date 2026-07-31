@@ -10,3 +10,4 @@ script-opts/memo-history.log
 *.bk
 fonts.conf-backup
 scripts/autosubsync/.git.local/
+wiki/
