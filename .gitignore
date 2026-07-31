@@ -6,6 +6,7 @@ script-opts/anime_detect.conf
 script-opts/memo-history.log
 scripts/sponsorblock_shared/sponsorblock.txt
 data/
+chapters/
 .env
 .omo/
 *.save
