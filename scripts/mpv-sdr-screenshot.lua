@@ -79,7 +79,7 @@ local function screenshot()
                 if value ~= nil then mp.set_property(name, value) end
             end
             busy = false
-            mp.osd_message("SDR screenshot failed", 2500)
+            mp.osd_message("SDR screenshot failed", 2.5)
             return
         end
 
@@ -97,7 +97,7 @@ local function screenshot()
             clipboard_command = nil
         end)
         busy = false
-        mp.osd_message("SDR screenshot copied", 2500)
+        mp.osd_message("SDR screenshot copied", 2.5)
     end
 
     mp.add_timeout(0.1, finish)
