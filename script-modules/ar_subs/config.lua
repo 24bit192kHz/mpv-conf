@@ -48,10 +48,13 @@ function M.load(mp, options)
     -- without being declared here -- read_options dropped them from the
     -- conf file as "unknown key" and only the code defaults ever applied.
     search_cache_ttl_days = 30,
-    subtitle_api_url = "http://192.168.0.125:8787",
+    subtitle_api_url = "http://127.0.0.1:8787",
     subtitle_api_timeout = 10,
     skip_if_sibling_sub = "yes",
     subsource_api_key = "",
+    -- Auto-fetch gate: empty = fetch for anything that plays; non-empty =
+    -- only files whose path contains this string.
+    restricted_path = "",
   }
   options.read_options(config, mp.get_script_name())
 

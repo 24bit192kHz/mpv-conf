@@ -26,3 +26,7 @@ subtitle_api_timeout=10
 # Skip fetching when the playing video already has a same-stem external subtitle
 # loaded (the per-episode sibling kept in the folder). Set "no" to always fetch.
 skip_if_sibling_sub=yes
+
+# Restrict auto-fetch to files whose path contains this string; empty =
+# fetch for anything that plays (global mode).
+restricted_path=

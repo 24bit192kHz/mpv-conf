@@ -91,8 +91,9 @@ local BATCH_SIZE = 1
 -- Manual next (Ctrl+Shift+V): up to this many sequential tries per press.
 local AUTO_MAX_DOWNLOAD_ATTEMPTS = 1
 local MANUAL_MAX_DOWNLOAD_ATTEMPTS = 3
-local GLOBAL_MODE = false
-local RESTRICTED_PATH = "/mnt/my-zfs"
+-- Auto-fetch gate: empty = fetch for anything that plays; non-empty =
+-- only files whose path contains this string (conf: restricted_path).
+local RESTRICTED_PATH = config.restricted_path or ""
 local SCRIPT_DIR = mp.get_script_directory() or "."
 local rate_limit_until = nil
 -- Soft rate-limit retries (temporary 429 with remaining quota).
@@ -230,7 +231,7 @@ local function is_enabled()
     if not path then return false end
     
     -- 1. Restrict to specific path unless global mode is enabled
-    if not GLOBAL_MODE and not path:find(RESTRICTED_PATH, 1, true) then
+    if RESTRICTED_PATH ~= "" and not path:find(RESTRICTED_PATH, 1, true) then
         return false
     end
     
