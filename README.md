@@ -41,8 +41,11 @@ Keybindings: `n` re-sync, `Ctrl+N` sync menu, `F12` clear episode cache,
   Mode A chains on `ALT+1`..`ALT+6`, `ALT+9` toggles the downscaler,
   `ALT+0` clears all shaders.
 - **Auto profile**: `[Anime]` swaps in the Anime4K chain (replace, not
-  stack; HDR sources excluded) when `anime_detect.lua` classifies the
-  file as anime via TMDB genres, or it plays from an `/Anime/` folder.
+  stack; HDR sources excluded; height-gated so 4K falls back to the
+  SSim chain) when `anime_detect.lua` classifies the file as anime
+  (TMDB Animation genre + Japanese original language — western
+  animation like Pixar/Arcane stays off the Anime4K path), or it plays
+  from an `/Anime/` folder.
 - **SmartSkip** (from [awesome-mpv](https://github.com/stax76/awesome-mpv)):
   auto-skips Opening/Ending/Preview chapters after a 3s cancelable
   countdown; silence-based skip (`?`) for unchaptered files.

@@ -22,14 +22,31 @@ local cfg = {
   genre_ids = "16",
   min_score = 0.0,
   skip_protocols = "http,https,rtmp,rtsp",
+  -- Require Japanese original language: genre 16 is "Animation" and also
+  -- matches Pixar/Disney/Arcane, which Anime4K's line-art tuning harms.
+  japanese_only = "yes",
   debug = "no",
 }
 options.read_options(cfg, "anime_detect")
 
--- Fall back to the env var so the key can live in the gitignored .env
--- instead of script-opts/anime_detect.conf.
+-- Key source order: conf, process env, then the gitignored ~~/.env
+-- dotenv (mpv does NOT export .env into the process environment, so
+-- os.getenv alone never sees it -- parse it like ar_subs does).
 if cfg.tmdb_api_key == "" then
   cfg.tmdb_api_key = os.getenv("TMDB_API_KEY") or ""
+end
+if cfg.tmdb_api_key == "" then
+  local f = io.open(mp.command_native({"expand-path", "~~/.env"}), "r")
+  if f then
+    for line in f:lines() do
+      local val = line:match("^%s*TMDB_API_KEY%s*=%s*(.-)%s*$")
+      if val then
+        cfg.tmdb_api_key = val:gsub("^['\"]", ""):gsub("['\"]$", "")
+        break
+      end
+    end
+    f:close()
+  end
 end
 
 -- genres table { [16] = true, ... }
@@ -152,12 +169,14 @@ local function probe(raw_title)
       return
     end
     local is_anime = false
-    for _, gid in ipairs(best.genre_ids) do
-      if genres[gid] then is_anime = true break end
+    if cfg.japanese_only ~= "yes" or best.original_language == "ja" then
+      for _, gid in ipairs(best.genre_ids) do
+        if genres[gid] then is_anime = true break end
+      end
     end
     cache[norm] = is_anime
     mp.set_property("user-data/anime_detect/is_anime", is_anime and "1" or "0")
-    log("result", norm, is_anime, best.name or best.title or "")
+    log("result", norm, is_anime, best.original_language or "?", best.name or best.title or "")
   end)
 end
 

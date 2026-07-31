@@ -5,4 +5,9 @@ tmdb_api_key=
 genre_ids=16
 min_score=0.0
 skip_protocols=http,https,rtmp,rtsp
+# Genre 16 = "Animation" also matches Pixar/Disney/Arcane; Anime4K's
+# line-art tuning suits Japanese anime, not western 3D CGI. Require the
+# match's original language to be Japanese. Set no to classify all
+# animation as anime.
+japanese_only=yes
 debug=no
