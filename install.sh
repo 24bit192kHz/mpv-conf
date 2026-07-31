@@ -3,6 +3,7 @@ set -eu
 
 repo="${MPV_CONF_REPO:-24bit192kHz/mpv-conf}"
 branch="${MPV_CONF_BRANCH:-master}"
+: "${HOME:?HOME must be set}"
 config_home="${XDG_CONFIG_HOME:-$HOME/.config}"
 target="${MPV_CONF_TARGET:-$config_home/mpv}"
 archive_url="https://github.com/$repo/archive/refs/heads/$branch.tar.gz"
@@ -57,6 +58,24 @@ do
     fi
 done
 
+# Reinstalls keep the user's own settings: .env and every script-opts conf
+# from the backup win over the freshly copied repo versions (the repo ships
+# no ar_subs.conf at all, so edits to it always survive).
+if [ -n "${backup:-}" ] && [ -d "$backup" ]; then
+    if [ -d "$backup/script-opts" ]; then
+        cp -R "$backup/script-opts/." "$target/script-opts/"
+    fi
+    if [ -f "$backup/.env" ]; then
+        cp "$backup/.env" "$target/.env"
+    fi
+fi
+
+# Per-device screenshot directory: the repo conf hardcodes the maintainer's
+# path; point it at this user's Pictures instead.
+shots="$HOME/Pictures/mpv"
+mkdir -p "$shots"
+sed -i.tmp "s|/home/btw/Pictures/mpv|$shots|g" "$target/mpv.conf" && rm -f "$target/mpv.conf.tmp"
+
 # cuda-crop-cpp: native C++ sidecar (ffprobe + ffmpeg cropdetect). Needs cmake,
 # a C++17 compiler, and nlohmann_json. Try to build; otherwise print manual steps.
 if [ -d "$target/cuda-crop-cpp" ]; then
@@ -72,4 +91,13 @@ if [ -d "$target/cuda-crop-cpp" ]; then
     fi
 fi
 
+# Ready-to-use conf from the example (never overwrites: the old target was
+# backed up above, so a fresh install has no ar_subs.conf yet).
+if [ -f "$target/script-opts/ar_subs.conf.example" ] && \
+   [ ! -f "$target/script-opts/ar_subs.conf" ]; then
+    cp "$target/script-opts/ar_subs.conf.example" "$target/script-opts/ar_subs.conf"
+fi
+
 echo "Installed mpv config to $target"
+echo "API keys: edit $target/script-opts/ar_subs.conf (subsource_api_key, subdl_api_key)"
+echo "          or copy $target/.env.example to $target/.env and fill it in."

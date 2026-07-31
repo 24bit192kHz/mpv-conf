@@ -25,6 +25,7 @@ Expand-Archive -Path $zip -DestinationPath $extract -Force
 $src = Get-ChildItem -Directory $extract | Select-Object -First 1
 if (-not $src) { throw 'Could not unpack config archive' }
 
+$backup = $null
 if (Test-Path $target) {
     $backup = "$target.backup.$(Get-Date -Format 'yyyyMMdd-HHmmss')"
     Write-Host "Backing up existing $target -> $backup"
@@ -39,6 +40,26 @@ $items = @(
 foreach ($it in $items) {
     $p = Join-Path $src.FullName $it
     if (Test-Path $p) { Copy-Item -Path $p -Destination $target -Recurse -Force }
+}
+
+# Reinstalls keep the user's own settings: .env and every script-opts conf
+# from the backup win over the freshly copied repo versions.
+if ($backup -and (Test-Path $backup)) {
+    $bo = Join-Path $backup 'script-opts'
+    if (Test-Path $bo) {
+        Copy-Item -Path "$bo\*" -Destination (Join-Path $target 'script-opts') -Recurse -Force
+    }
+    $benv = Join-Path $backup '.env'
+    if (Test-Path $benv) { Copy-Item $benv (Join-Path $target '.env') -Force }
+}
+
+# Per-device screenshot directory: the repo conf hardcodes the maintainer's
+# Linux path; point it at this user's Desktop\mpv-screenshots (~~desktop is
+# expanded by mpv itself).
+$mpvConf = Join-Path $target 'mpv.conf'
+if (Test-Path $mpvConf) {
+    (Get-Content $mpvConf -Raw) -replace [regex]::Escape('/home/btw/Pictures/mpv'), '~~desktop/mpv-screenshots' |
+        Set-Content $mpvConf -NoNewline
 }
 
 # cuda-crop-cpp: native C++ sidecar (ffprobe + ffmpeg cropdetect). Needs CMake,
@@ -63,5 +84,14 @@ if (Test-Path $cropDir) {
 Remove-Item $zip -Force -ErrorAction SilentlyContinue
 if (Test-Path $extract) { Remove-Item $extract -Recurse -Force -ErrorAction SilentlyContinue }
 
+# Ready-to-use conf from the example (the old target was backed up above, so
+# a fresh install has no ar_subs.conf to clobber).
+$confExample = Join-Path $target 'script-opts\ar_subs.conf.example'
+$confReal    = Join-Path $target 'script-opts\ar_subs.conf'
+if ((Test-Path $confExample) -and -not (Test-Path $confReal)) {
+    Copy-Item $confExample $confReal
+}
+
 Write-Host "Installed mpv config to $target"
-Write-Host 'Copy .env.example to .env and fill in your API keys (SubDL / TMDB / TVDB).'
+Write-Host 'API keys: edit script-opts\ar_subs.conf (subsource_api_key first, subdl_api_key fallback)'
+Write-Host '          or copy .env.example to .env and fill it in (TMDB / TVDB optional).'
