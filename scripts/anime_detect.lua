@@ -147,7 +147,7 @@ local function probe(raw_title)
   local q = norm:gsub("%s+", "+")
   local url = string.format("https://api.themoviedb.org/3/search/multi?api_key=%s&query=%s",
     cfg.tmdb_api_key, q)
-  log("query", url)
+  log("query", (url:gsub("api_key=[^&]+", "api_key=***")))
   curl_json(url, function(j)
     inflight[norm] = nil
     if not j or not j.results or #j.results == 0 then
@@ -182,15 +182,43 @@ local function probe(raw_title)
       mp.set_property("user-data/anime_detect/is_anime", "0")
       return
     end
-    local is_anime = false
-    if cfg.japanese_only ~= "yes" or best.original_language == "ja" then
-      for _, gid in ipairs(best.genre_ids) do
-        if genres[gid] then is_anime = true break end
-      end
+    local function finalize(is_anime, lang)
+      cache[norm] = is_anime
+      mp.set_property("user-data/anime_detect/is_anime", is_anime and "1" or "0")
+      log("result", norm, is_anime, lang or "?", best.name or best.title or "")
     end
-    cache[norm] = is_anime
-    mp.set_property("user-data/anime_detect/is_anime", is_anime and "1" or "0")
-    log("result", norm, is_anime, best.original_language or "?", best.name or best.title or "")
+
+    local genre_match = false
+    for _, gid in ipairs(best.genre_ids) do
+      if genres[gid] then genre_match = true break end
+    end
+    if not genre_match then
+      finalize(false, best.original_language)
+      return
+    end
+    if cfg.japanese_only ~= "yes" or best.original_language == "ja" then
+      finalize(true, best.original_language)
+      return
+    end
+    if best.media_type == "tv" then
+      -- Japanese gate vs co-productions: TMDB tags e.g. Cyberpunk
+      -- Edgerunners as lang=en (CD Projekt IP), but origin_country
+      -- (details endpoint only) carries JP. One extra light call,
+      -- only for genre-matching non-ja shows.
+      curl_json(string.format("https://api.themoviedb.org/3/tv/%s?api_key=%s",
+          best.id, cfg.tmdb_api_key), function(d)
+        local jp = false
+        if d and type(d.origin_country) == "table" then
+          for _, c in ipairs(d.origin_country) do
+            if c == "JP" then jp = true break end
+          end
+        end
+        finalize(jp, (best.original_language or "?") .. (jp and "+JP" or ""))
+      end)
+      return
+    end
+    -- Non-ja animation movies (Pixar etc.) stay off the anime path.
+    finalize(false, best.original_language)
   end)
 end
 
