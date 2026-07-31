@@ -51,6 +51,7 @@ for item in \
     script-modules \
     script-opts \
     scripts \
+    shaders \
     cuda-crop-cpp
 do
     if [ -e "$src/$item" ]; then
@@ -98,6 +99,12 @@ if [ -f "$target/script-opts/ar_subs.conf.example" ] && \
     cp "$target/script-opts/ar_subs.conf.example" "$target/script-opts/ar_subs.conf"
 fi
 
+# Fresh installs get an empty .env (mode 600) to fill in -- API keys live
+# here and nowhere else.
+if [ ! -f "$target/.env" ] && [ -f "$target/.env.example" ]; then
+    cp "$target/.env.example" "$target/.env"
+    chmod 600 "$target/.env"
+fi
+
 echo "Installed mpv config to $target"
-echo "API keys: edit $target/script-opts/ar_subs.conf (subsource_api_key, subdl_api_key)"
-echo "          or copy $target/.env.example to $target/.env and fill it in."
+echo "API keys: fill in $target/.env (SUBDL, SUBSOURCE, TMDB, TVDB)."

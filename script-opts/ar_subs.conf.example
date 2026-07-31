@@ -15,12 +15,11 @@ subsource_api_key=
 # filter the cached pool with zero search API calls. TTL in days; 0 disables.
 search_cache_ttl_days=30
 
-# Offline Subscene Arabic index served by the subtitle-api Docker container.
-# Deployed on the docker LXC: code + compose live in the share itself at
-# /mnt/Subscene arabic dump/subtitle-api (192.168.0.125); a local copy of the
-# sources is at /mnt/my-zfs/dumps/subtitle-api. Checked before any SubDL API
-# call -- a hit loads with zero download quota. If the API is unreachable
-# the script silently falls back to SubDL.
+# Offline Subscene Arabic index served by a self-hosted Docker container
+# (subtitle-api: an FTS5 index over the Subscene Arabic dump; deploy your
+# own -- the container code is not in this repo). Checked before any SubDL
+# API call -- a hit loads with zero download quota. If the API is
+# unreachable the script silently falls back to SubDL.
 subtitle_api_url=http://127.0.0.1:8787
 subtitle_api_timeout=10
 

@@ -35,7 +35,7 @@ New-Item -ItemType Directory -Force -Path $target | Out-Null
 
 $items = @(
     'mpv.conf', '.env.example', 'input.conf', 'profiles.conf',
-    'fonts', 'script-modules', 'script-opts', 'scripts', 'cuda-crop-cpp'
+    'fonts', 'script-modules', 'script-opts', 'scripts', 'shaders', 'cuda-crop-cpp'
 )
 foreach ($it in $items) {
     $p = Join-Path $src.FullName $it
@@ -92,6 +92,12 @@ if ((Test-Path $confExample) -and -not (Test-Path $confReal)) {
     Copy-Item $confExample $confReal
 }
 
+# Fresh installs get an empty .env to fill in -- API keys live here only.
+$envFile    = Join-Path $target '.env'
+$envExample = Join-Path $target '.env.example'
+if (-not (Test-Path $envFile) -and (Test-Path $envExample)) {
+    Copy-Item $envExample $envFile
+}
+
 Write-Host "Installed mpv config to $target"
-Write-Host 'API keys: edit script-opts\ar_subs.conf (subsource_api_key first, subdl_api_key fallback)'
-Write-Host '          or copy .env.example to .env and fill it in (TMDB / TVDB optional).'
+Write-Host 'API keys: fill in .env (SUBDL, SUBSOURCE, TMDB, TVDB).'

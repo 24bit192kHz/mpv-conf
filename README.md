@@ -34,6 +34,19 @@ episodes' refs are prefetched in the background, and implausible alignments
 Keybindings: `n` re-sync, `Ctrl+N` sync menu, `F12` clear episode cache,
 `Ctrl+Shift+V` next candidate subtitle.
 
+## Anime stack
+
+- **Shaders** (`shaders/`): always-on KrigBilateral (chroma) + SSimSuperRes
+  (ringing/sharpness) + SSimDownscaler on top of `gpu-hq`. Anime4K v4.x
+  Mode A chains on `ALT+1`..`ALT+6`, `ALT+9` toggles the downscaler,
+  `ALT+0` clears all shaders.
+- **Auto profile**: `[Anime]` swaps in the Anime4K chain (replace, not
+  stack; HDR sources excluded) when `anime_detect.lua` classifies the
+  file as anime via TMDB genres, or it plays from an `/Anime/` folder.
+- **SmartSkip** (from [awesome-mpv](https://github.com/stax76/awesome-mpv)):
+  auto-skips Opening/Ending/Preview chapters after a 3s cancelable
+  countdown; silence-based skip (`?`) for unchaptered files.
+
 ## Install
 
 ### Linux / macOS
@@ -64,7 +77,21 @@ Keys are **intentionally not committed**. Copy `.env.example` to `.env` and fill
 
 `script-opts/ar_subs.conf` is also supported for mpv-style overrides
 (see `ar_subs.conf.example` for every option, including the offline
-index URL and the sync-engine tuning).
+index URL and the sync-engine tuning). Non-empty values there override
+`.env` -- keep the keys themselves in `.env`. `anime_detect.lua` reads
+`TMDB_API_KEY` straight from the environment.
+
+## State
+
+All regenerable state lives under one root -- delete it for a clean start
+(watching a show repopulates everything automatically):
+
+```
+~/.cache/mpv/
+├── ar_subs/       subtitle store (.zst), search db, hot files
+├── autosubsync/   extracted refs (.zst), transforms, slow-show marks
+└── memo/          playback history
+```
 
 ## Dynamic crop
 
