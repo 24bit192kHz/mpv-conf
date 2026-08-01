@@ -452,7 +452,7 @@ function M.find_matching_episode_file(sub_files, season, episode, valid_episodes
 
   if best_match and best_score >= MIN_MATCH_SCORE then
     local chosen_name = best_match:match("([^/]+)$")
-    mp.msg.info(string.format("SubDL: ✅ Selected for E%02d (score=%d): %s", 
+    mp.msg.info(string.format("✅ Selected for E%02d (score=%d): %s",
         episode, best_score, chosen_name))
     return best_match
   elseif best_match and best_score > 0 then

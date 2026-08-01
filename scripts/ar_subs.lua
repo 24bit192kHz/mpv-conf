@@ -603,7 +603,7 @@ local function load_media_catalog()
         end
     end
 
-    mp.msg.info(string.format("SubDL: media catalog loaded (%d rows)", loaded_rows))
+    mp.msg.info(string.format("media catalog loaded (%d rows)", loaded_rows))
     media_util.set_catalog(media_catalog.exact_type, media_catalog.basename_types, media_catalog.stem_types)
 end
 
@@ -1816,7 +1816,7 @@ local function check_existing_season_files(show_title, season, episode)
                 cached_seasons[season][episode] = nil
                 return false
             end
-            mp.msg.info(string.format("SubDL: Found cached %s S%02dE%02d: %s", show_title, season, episode, target_file))
+            mp.msg.info(string.format("Found cached %s S%02dE%02d: %s", show_title, season, episode, target_file))
             mp.commandv("sub-add", zstd_mod.ensure(target_file))
             return true
         end
@@ -1831,7 +1831,7 @@ local function check_existing_subtitle_for_file(video_filename)
     local function try_key(key)
         local target_file = key and movie_files_map[key]
         if target_file and utils.file_info(target_file) then
-            mp.msg.info(string.format("SubDL: Found cached subtitle for '%s': %s", key, target_file))
+            mp.msg.info(string.format("Found cached subtitle for '%s': %s", key, target_file))
             mp.commandv("sub-add", zstd_mod.ensure(target_file))
             return true
         end
@@ -2120,7 +2120,7 @@ save_runtime_cache = function()
         if f then
             f:write(json_str)
             f:close()
-            mp.msg.info("SubDL: saved cache to " .. CACHE_FILE)
+            mp.msg.info("saved cache to " .. CACHE_FILE)
         end
     end
 end
@@ -2165,7 +2165,7 @@ load_runtime_cache = function()
                 end
             end
             
-            mp.msg.info("SubDL: loaded cache from disk")
+            mp.msg.info("loaded cache from disk")
         end
     end
 end
@@ -2227,7 +2227,7 @@ local function index_local_files()
     end
     
     local elapsed = os.time() - start_time
-    mp.msg.info(string.format("SubDL: indexed %d local subtitle files in %ds", count, elapsed))
+    mp.msg.info(string.format("indexed %d local subtitle files in %ds", count, elapsed))
 end
 
 -- Manual search with custom query
@@ -2426,5 +2426,5 @@ mp.observe_property("track-list", "native", function()
     publish_uosc_button()
 end)
 
-mp.msg.info("SubDL Arabic subtitle loader initialized (Ctrl+Shift+V=next, Ctrl+V=deep, Alt+V=manual, Ctrl+Alt+V=picker)")
+mp.msg.info("Arabic subtitle loader initialized (Ctrl+Shift+V=next, Ctrl+V=deep, Alt+V=manual, Ctrl+Alt+V=picker)")
 mp.msg.info("Subtitle database: " .. SUBS_DIR)
