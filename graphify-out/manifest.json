@@ -1,0 +1,482 @@
+{
+  ".claude/settings.local.json": {
+    "mtime": 1783421240.74001,
+    "ast_hash": "3517adaab2175ce03f658a33220fd83d",
+    "semantic_hash": "3517adaab2175ce03f658a33220fd83d"
+  },
+  "cuda-crop-cpp/src/main.cpp": {
+    "mtime": 1783497631.751121,
+    "ast_hash": "915068b98eea0585adc2748c3f44f1b4",
+    "semantic_hash": "915068b98eea0585adc2748c3f44f1b4"
+  },
+  "install.ps1": {
+    "mtime": 1785515247.6366224,
+    "ast_hash": "2a8a7f0b82173dcafba5909a46a41afd",
+    "semantic_hash": "2a8a7f0b82173dcafba5909a46a41afd"
+  },
+  "install.sh": {
+    "mtime": 1785515247.6366224,
+    "ast_hash": "5364f00dc66582acaf8f4057f5f2f126",
+    "semantic_hash": "5364f00dc66582acaf8f4057f5f2f126"
+  },
+  "script-modules/ar_subs/cache.lua": {
+    "mtime": 1785455525.3677511,
+    "ast_hash": "6c1885be847bb3a8475fb4101d927d70",
+    "semantic_hash": "6c1885be847bb3a8475fb4101d927d70"
+  },
+  "script-modules/ar_subs/config.lua": {
+    "mtime": 1785515247.6376224,
+    "ast_hash": "0693adb9bef4eeed1341e5f36207e88e",
+    "semantic_hash": "0693adb9bef4eeed1341e5f36207e88e"
+  },
+  "script-modules/ar_subs/http.lua": {
+    "mtime": 1785455525.368679,
+    "ast_hash": "42e25691e1945bbd771e001449b4c17e",
+    "semantic_hash": "42e25691e1945bbd771e001449b4c17e"
+  },
+  "script-modules/ar_subs/init.lua": {
+    "mtime": 1785455525.369629,
+    "ast_hash": "7e11ffbcdd9efe0b286c15f9a0d56c17",
+    "semantic_hash": "7e11ffbcdd9efe0b286c15f9a0d56c17"
+  },
+  "script-modules/ar_subs/providers/subdl.lua": {
+    "mtime": 1785455525.3707047,
+    "ast_hash": "c109b7ffc2353816c250d4f8d96709e9",
+    "semantic_hash": "c109b7ffc2353816c250d4f8d96709e9"
+  },
+  "script-modules/ar_subs/providers/tvdb.lua": {
+    "mtime": 1785455525.3697047,
+    "ast_hash": "5f4f6b02716e890e48bb6240678b4bb5",
+    "semantic_hash": "5f4f6b02716e890e48bb6240678b4bb5"
+  },
+  "script-modules/ar_subs/store.lua": {
+    "mtime": 1785455525.390836,
+    "ast_hash": "544b638b849f2b888d282bb8a20c9135",
+    "semantic_hash": "544b638b849f2b888d282bb8a20c9135"
+  },
+  "script-modules/ar_subs/test/run.lua": {
+    "mtime": 1785455525.37249,
+    "ast_hash": "c5c316731dd45e64d2a5014d8c616830",
+    "semantic_hash": "c5c316731dd45e64d2a5014d8c616830"
+  },
+  "script-modules/ar_subs/test/spec/test_activation.lua": {
+    "mtime": 1785455525.3734193,
+    "ast_hash": "7e7775eec7fc84cce7abcbbe95a8292e",
+    "semantic_hash": "7e7775eec7fc84cce7abcbbe95a8292e"
+  },
+  "script-modules/ar_subs/test/spec/test_cache.lua": {
+    "mtime": 1785455525.3742313,
+    "ast_hash": "5e75c3a3427b59365a96370601ff6752",
+    "semantic_hash": "5e75c3a3427b59365a96370601ff6752"
+  },
+  "script-modules/ar_subs/test/spec/test_crash_regressions.lua": {
+    "mtime": 1785455525.3750582,
+    "ast_hash": "1d52f33967fe1ebfe042821bbc63ec45",
+    "semantic_hash": "1d52f33967fe1ebfe042821bbc63ec45"
+  },
+  "script-modules/ar_subs/test/spec/test_http_async.lua": {
+    "mtime": 1785455525.3758528,
+    "ast_hash": "6e16e2ce3181395261e3d6b236ffd238",
+    "semantic_hash": "6e16e2ce3181395261e3d6b236ffd238"
+  },
+  "script-modules/ar_subs/test/spec/test_match.lua": {
+    "mtime": 1785455525.376838,
+    "ast_hash": "d4ecea67e2e0b44fea8aae1144f3e3de",
+    "semantic_hash": "d4ecea67e2e0b44fea8aae1144f3e3de"
+  },
+  "script-modules/ar_subs/test/spec/test_media.lua": {
+    "mtime": 1785455525.3777065,
+    "ast_hash": "a3726c1465571148eb9cda9374489013",
+    "semantic_hash": "a3726c1465571148eb9cda9374489013"
+  },
+  "script-modules/ar_subs/test/spec/test_subdl_client.lua": {
+    "mtime": 1785455525.3786697,
+    "ast_hash": "54ab057f3d459ce1897ba193ccd584d1",
+    "semantic_hash": "54ab057f3d459ce1897ba193ccd584d1"
+  },
+  "script-modules/ar_subs/test/spec/test_tvdb.lua": {
+    "mtime": 1785455525.379568,
+    "ast_hash": "ae70ec7421afd4de8543e1359ab6f1af",
+    "semantic_hash": "ae70ec7421afd4de8543e1359ab6f1af"
+  },
+  "script-modules/ar_subs/test/spec/test_uosc_picker.lua": {
+    "mtime": 1785455525.3804426,
+    "ast_hash": "801ec57c51772fcd3e4e892584e0ad01",
+    "semantic_hash": "801ec57c51772fcd3e4e892584e0ad01"
+  },
+  "script-modules/ar_subs/test/spec/test_url.lua": {
+    "mtime": 1785455525.3812623,
+    "ast_hash": "59308061bafb31a96ec70e0bcea6095d",
+    "semantic_hash": "59308061bafb31a96ec70e0bcea6095d"
+  },
+  "script-modules/ar_subs/test/stubs/mp.lua": {
+    "mtime": 1785455525.3820202,
+    "ast_hash": "6d90c4a0c2d7c49a24a9d46396927674",
+    "semantic_hash": "6d90c4a0c2d7c49a24a9d46396927674"
+  },
+  "script-modules/ar_subs/test/stubs/options.lua": {
+    "mtime": 1783497631.753386,
+    "ast_hash": "8d95765e154a2a2d9ad85848055d97bb",
+    "semantic_hash": "8d95765e154a2a2d9ad85848055d97bb"
+  },
+  "script-modules/ar_subs/test/stubs/utils.lua": {
+    "mtime": 1783497631.753386,
+    "ast_hash": "866fb2368a4b24bf0d66752e3ec17a86",
+    "semantic_hash": "866fb2368a4b24bf0d66752e3ec17a86"
+  },
+  "script-modules/ar_subs/ui/uosc_picker.lua": {
+    "mtime": 1785515247.6376224,
+    "ast_hash": "2006da5ff23df2a68e3a987708a0dc6a",
+    "semantic_hash": "2006da5ff23df2a68e3a987708a0dc6a"
+  },
+  "script-modules/ar_subs/util/activation.lua": {
+    "mtime": 1785455869.4682257,
+    "ast_hash": "48f96cddff0c83bd6cacdae376d29bf7",
+    "semantic_hash": "48f96cddff0c83bd6cacdae376d29bf7"
+  },
+  "script-modules/ar_subs/util/localdb.lua": {
+    "mtime": 1785455525.3875089,
+    "ast_hash": "7bddb7337181465b43465fe5f8be5ffc",
+    "semantic_hash": "7bddb7337181465b43465fe5f8be5ffc"
+  },
+  "script-modules/ar_subs/util/match.lua": {
+    "mtime": 1785455525.38562,
+    "ast_hash": "74d935b80ea74cfc1f761712dafa8e84",
+    "semantic_hash": "74d935b80ea74cfc1f761712dafa8e84"
+  },
+  "script-modules/ar_subs/util/media.lua": {
+    "mtime": 1785455525.3844538,
+    "ast_hash": "5cee65a5cfa1686335ff4c373ca60507",
+    "semantic_hash": "5cee65a5cfa1686335ff4c373ca60507"
+  },
+  "script-modules/ar_subs/util/subsource.lua": {
+    "mtime": 1785456085.980261,
+    "ast_hash": "f80aa86b6d51e0bbe36fbfa3ca4f8d4c",
+    "semantic_hash": "f80aa86b6d51e0bbe36fbfa3ca4f8d4c"
+  },
+  "script-modules/ar_subs/util/subtitle_api.lua": {
+    "mtime": 1785455525.3886914,
+    "ast_hash": "61206ddacd1663470d6bf070573994fd",
+    "semantic_hash": "61206ddacd1663470d6bf070573994fd"
+  },
+  "script-modules/ar_subs/util/url.lua": {
+    "mtime": 1785455525.3866413,
+    "ast_hash": "a5510905b6114e04dd3ffc3b10e1190f",
+    "semantic_hash": "a5510905b6114e04dd3ffc3b10e1190f"
+  },
+  "script-modules/ar_subs/util/zstd.lua": {
+    "mtime": 1785515247.6376224,
+    "ast_hash": "c50d038fb4ef81d0245277f5b3b4d1d9",
+    "semantic_hash": "c50d038fb4ef81d0245277f5b3b4d1d9"
+  },
+  "script-modules/dynamic-crop-legacy.lua": {
+    "mtime": 1785515247.6376224,
+    "ast_hash": "a0c18af9cde45eb4cdb4f37b85659d1f",
+    "semantic_hash": "a0c18af9cde45eb4cdb4f37b85659d1f"
+  },
+  "scripts/SmartSkip.lua": {
+    "mtime": 1785515247.6376224,
+    "ast_hash": "99bf1d4a9200cc0a97028df24afe4baf",
+    "semantic_hash": "99bf1d4a9200cc0a97028df24afe4baf"
+  },
+  "scripts/anime_detect.lua": {
+    "mtime": 1785521982.8341403,
+    "ast_hash": "a36a856c6cd3a9e5e5177045110d3797",
+    "semantic_hash": "a36a856c6cd3a9e5e5177045110d3797"
+  },
+  "scripts/ar_shortcuts.lua": {
+    "mtime": 1783216065.2004735,
+    "ast_hash": "3ec403eb903b6103ed678ec386dbd1a8",
+    "semantic_hash": "3ec403eb903b6103ed678ec386dbd1a8"
+  },
+  "scripts/ar_subs.lua": {
+    "mtime": 1785515247.6386225,
+    "ast_hash": "abb01c1e3f1762e6edb9ffc07d475f5d",
+    "semantic_hash": "abb01c1e3f1762e6edb9ffc07d475f5d"
+  },
+  "scripts/auto-save-state.lua": {
+    "mtime": 1782477127.7375798,
+    "ast_hash": "9ce8f94bf9b74103476057bc452d107d",
+    "semantic_hash": "9ce8f94bf9b74103476057bc452d107d"
+  },
+  "scripts/autodeint.lua": {
+    "mtime": 1782477127.7375798,
+    "ast_hash": "776ed301ea28279564bc26867d3d05f5",
+    "semantic_hash": "776ed301ea28279564bc26867d3d05f5"
+  },
+  "scripts/autosubsync/autosubsync.lua": {
+    "mtime": 1785515247.6386225,
+    "ast_hash": "c6e9aa4b82c3554a801751fbd45af0fb",
+    "semantic_hash": "c6e9aa4b82c3554a801751fbd45af0fb"
+  },
+  "scripts/autosubsync/helpers.lua": {
+    "mtime": 1782477127.7403805,
+    "ast_hash": "5e6a5a40ae964ccfa36e0062a2313620",
+    "semantic_hash": "5e6a5a40ae964ccfa36e0062a2313620"
+  },
+  "scripts/autosubsync/main.lua": {
+    "mtime": 1782477127.7403805,
+    "ast_hash": "54c23a7c98ed743fdc8ba6af1b48f406",
+    "semantic_hash": "54c23a7c98ed743fdc8ba6af1b48f406"
+  },
+  "scripts/autosubsync/menu.lua": {
+    "mtime": 1782477127.7403805,
+    "ast_hash": "877b9e6bb97ef086fba9150c8dcc4fb9",
+    "semantic_hash": "877b9e6bb97ef086fba9150c8dcc4fb9"
+  },
+  "scripts/autosubsync/subtitle.lua": {
+    "mtime": 1782477127.7403805,
+    "ast_hash": "d139e10b266303e08a92fab65b718a98",
+    "semantic_hash": "d139e10b266303e08a92fab65b718a98"
+  },
+  "scripts/dynamic-crop.lua": {
+    "mtime": 1785199851.6643815,
+    "ast_hash": "60d79d13b42798a93bf6be443fe88d1c",
+    "semantic_hash": "60d79d13b42798a93bf6be443fe88d1c"
+  },
+  "scripts/evafast.lua": {
+    "mtime": 1782477127.7375798,
+    "ast_hash": "140e696699e3a7a4252143df790db353",
+    "semantic_hash": "140e696699e3a7a4252143df790db353"
+  },
+  "scripts/inputevent.lua": {
+    "mtime": 1782477127.7375798,
+    "ast_hash": "0a2f4caad9379b3d528f03298f0ccccc",
+    "semantic_hash": "0a2f4caad9379b3d528f03298f0ccccc"
+  },
+  "scripts/memo.lua": {
+    "mtime": 1782477127.7375798,
+    "ast_hash": "6b0465c247c09f5959f83bf94069b900",
+    "semantic_hash": "6b0465c247c09f5959f83bf94069b900"
+  },
+  "scripts/mpv-sdr-screenshot.lua": {
+    "mtime": 1785515247.6386225,
+    "ast_hash": "d8532e2e30c45b6ca139f248b20bc5a0",
+    "semantic_hash": "d8532e2e30c45b6ca139f248b20bc5a0"
+  },
+  "scripts/no-index-seek.lua": {
+    "mtime": 1782477127.7375798,
+    "ast_hash": "cdd6d4947e32b4f7705db052e2593cef",
+    "semantic_hash": "cdd6d4947e32b4f7705db052e2593cef"
+  },
+  "scripts/space-hold-speed.lua": {
+    "mtime": 1782846609.3692272,
+    "ast_hash": "05fab1c35740077f7fb85dc3c26810fc",
+    "semantic_hash": "05fab1c35740077f7fb85dc3c26810fc"
+  },
+  "scripts/sponsorblock.lua": {
+    "mtime": 1782477127.7375798,
+    "ast_hash": "ddbd1a6d698d029494de00134db138dd",
+    "semantic_hash": "ddbd1a6d698d029494de00134db138dd"
+  },
+  "scripts/sponsorblock_shared/main.lua": {
+    "mtime": 1782477127.7353292,
+    "ast_hash": "5860e43eb3c7d94f2ab6a25d0b06f6e1",
+    "semantic_hash": "5860e43eb3c7d94f2ab6a25d0b06f6e1"
+  },
+  "scripts/sponsorblock_shared/sponsorblock.py": {
+    "mtime": 1782477127.7353292,
+    "ast_hash": "3c3311c02f85eddf8b20aeecdd0521c8",
+    "semantic_hash": "3c3311c02f85eddf8b20aeecdd0521c8"
+  },
+  "scripts/thumbfast.lua": {
+    "mtime": 1782774352.5449026,
+    "ast_hash": "ee611128dfce04400190ecc673943290",
+    "semantic_hash": "ee611128dfce04400190ecc673943290"
+  },
+  "scripts/uosc/char-conv/zh.json": {
+    "mtime": 1702055130.0,
+    "ast_hash": "a97748e94376e2fb4c40d41dfd09f16e",
+    "semantic_hash": "a97748e94376e2fb4c40d41dfd09f16e"
+  },
+  "scripts/uosc/elements/BufferingIndicator.lua": {
+    "mtime": 1701943445.0,
+    "ast_hash": "d96ea5a67773296d664527b4991d6783",
+    "semantic_hash": "d96ea5a67773296d664527b4991d6783"
+  },
+  "scripts/uosc/elements/Button.lua": {
+    "mtime": 1756551242.0,
+    "ast_hash": "716a53c22ab1a51729cd3350b7ef4407",
+    "semantic_hash": "716a53c22ab1a51729cd3350b7ef4407"
+  },
+  "scripts/uosc/elements/Controls.lua": {
+    "mtime": 1752483628.0,
+    "ast_hash": "6c01414ad1dae166eda52df4c8819acd",
+    "semantic_hash": "6c01414ad1dae166eda52df4c8819acd"
+  },
+  "scripts/uosc/elements/Curtain.lua": {
+    "mtime": 1698833086.0,
+    "ast_hash": "7883ca65c74568c59f6a66020a2b0e8d",
+    "semantic_hash": "7883ca65c74568c59f6a66020a2b0e8d"
+  },
+  "scripts/uosc/elements/CycleButton.lua": {
+    "mtime": 1728372860.0,
+    "ast_hash": "4f5bd75114f3717013346a6c2d2e5172",
+    "semantic_hash": "4f5bd75114f3717013346a6c2d2e5172"
+  },
+  "scripts/uosc/elements/Element.lua": {
+    "mtime": 1753785712.0,
+    "ast_hash": "556936a2e32b658540338a9c70f3e2b7",
+    "semantic_hash": "556936a2e32b658540338a9c70f3e2b7"
+  },
+  "scripts/uosc/elements/Elements.lua": {
+    "mtime": 1756551242.0,
+    "ast_hash": "772e7a9a5963e13dc3e4a0a61f628939",
+    "semantic_hash": "772e7a9a5963e13dc3e4a0a61f628939"
+  },
+  "scripts/uosc/elements/ManagedButton.lua": {
+    "mtime": 1752482389.0,
+    "ast_hash": "fb1033544b372ee14f83f437a2cfb3b5",
+    "semantic_hash": "fb1033544b372ee14f83f437a2cfb3b5"
+  },
+  "scripts/uosc/elements/Menu.lua": {
+    "mtime": 1756551242.0,
+    "ast_hash": "ba131704f35ee3e1062ba3166d495dc2",
+    "semantic_hash": "ba131704f35ee3e1062ba3166d495dc2"
+  },
+  "scripts/uosc/elements/PauseIndicator.lua": {
+    "mtime": 1698839713.0,
+    "ast_hash": "f037725f60e7ca43c1402bd32d473d2f",
+    "semantic_hash": "f037725f60e7ca43c1402bd32d473d2f"
+  },
+  "scripts/uosc/elements/Speed.lua": {
+    "mtime": 1745687398.0,
+    "ast_hash": "c3f9adce7b2021c6b4c8e2de2c395620",
+    "semantic_hash": "c3f9adce7b2021c6b4c8e2de2c395620"
+  },
+  "scripts/uosc/elements/Timeline.lua": {
+    "mtime": 1757781188.0,
+    "ast_hash": "937267fe5b68130b18ddb0e991e8f07e",
+    "semantic_hash": "937267fe5b68130b18ddb0e991e8f07e"
+  },
+  "scripts/uosc/elements/TopBar.lua": {
+    "mtime": 1756551242.0,
+    "ast_hash": "9d052ac48bd5a2fa51efb268f498cdab",
+    "semantic_hash": "9d052ac48bd5a2fa51efb268f498cdab"
+  },
+  "scripts/uosc/elements/Updater.lua": {
+    "mtime": 1756551242.0,
+    "ast_hash": "0191497f2426bc80728ae8c53106a87a",
+    "semantic_hash": "0191497f2426bc80728ae8c53106a87a"
+  },
+  "scripts/uosc/elements/Volume.lua": {
+    "mtime": 1757781188.0,
+    "ast_hash": "c1cb274662eb809525f08258100916ea",
+    "semantic_hash": "c1cb274662eb809525f08258100916ea"
+  },
+  "scripts/uosc/elements/WindowBorder.lua": {
+    "mtime": 1702053518.0,
+    "ast_hash": "1bf28d23b1f1e02d71b0be3036e71f9c",
+    "semantic_hash": "1bf28d23b1f1e02d71b0be3036e71f9c"
+  },
+  "scripts/uosc/intl/de.json": {
+    "mtime": 1698929941.0,
+    "ast_hash": "2ac18992dbd8a1d6ca42fec205d0ce45",
+    "semantic_hash": "2ac18992dbd8a1d6ca42fec205d0ce45"
+  },
+  "scripts/uosc/intl/es.json": {
+    "mtime": 1735980839.0,
+    "ast_hash": "d34d8421f34b1af1a9bf3d101b7008c5",
+    "semantic_hash": "d34d8421f34b1af1a9bf3d101b7008c5"
+  },
+  "scripts/uosc/intl/fr.json": {
+    "mtime": 1698833086.0,
+    "ast_hash": "1057eed3680bd5bf52de7767b0ffa67a",
+    "semantic_hash": "1057eed3680bd5bf52de7767b0ffa67a"
+  },
+  "scripts/uosc/intl/pl.json": {
+    "mtime": 1752480213.0,
+    "ast_hash": "e120f962838623f65ee0bd9de4ee7434",
+    "semantic_hash": "e120f962838623f65ee0bd9de4ee7434"
+  },
+  "scripts/uosc/intl/ro.json": {
+    "mtime": 1698833086.0,
+    "ast_hash": "e60de890afa9712393c641902cc370b0",
+    "semantic_hash": "e60de890afa9712393c641902cc370b0"
+  },
+  "scripts/uosc/intl/ru.json": {
+    "mtime": 1698833086.0,
+    "ast_hash": "2fe64bf9f733b6e8ec6dc09b1519885b",
+    "semantic_hash": "2fe64bf9f733b6e8ec6dc09b1519885b"
+  },
+  "scripts/uosc/intl/tr.json": {
+    "mtime": 1739295782.0,
+    "ast_hash": "74764427a0d1d9ca956445a73f152065",
+    "semantic_hash": "74764427a0d1d9ca956445a73f152065"
+  },
+  "scripts/uosc/intl/uk.json": {
+    "mtime": 1698833086.0,
+    "ast_hash": "36b03a83293a7df08202276e94b16bef",
+    "semantic_hash": "36b03a83293a7df08202276e94b16bef"
+  },
+  "scripts/uosc/intl/zh-hans.json": {
+    "mtime": 1726507515.0,
+    "ast_hash": "1303ce0e025f01ea6d5b7d40b4f32df1",
+    "semantic_hash": "1303ce0e025f01ea6d5b7d40b4f32df1"
+  },
+  "scripts/uosc/lib/ass.lua": {
+    "mtime": 1756551354.0,
+    "ast_hash": "6599becaceaaf09085c3aa922d69e142",
+    "semantic_hash": "6599becaceaaf09085c3aa922d69e142"
+  },
+  "scripts/uosc/lib/buttons.lua": {
+    "mtime": 1752480696.0,
+    "ast_hash": "59fc93211e333df287ec7ebf475fe63c",
+    "semantic_hash": "59fc93211e333df287ec7ebf475fe63c"
+  },
+  "scripts/uosc/lib/char_conv.lua": {
+    "mtime": 1753624266.0,
+    "ast_hash": "af55a27d03ec78216991749e2dd2ba2d",
+    "semantic_hash": "af55a27d03ec78216991749e2dd2ba2d"
+  },
+  "scripts/uosc/lib/cursor.lua": {
+    "mtime": 1747934322.0,
+    "ast_hash": "e263a24d04b722ffba5d1bb7786c764e",
+    "semantic_hash": "e263a24d04b722ffba5d1bb7786c764e"
+  },
+  "scripts/uosc/lib/fzy.lua": {
+    "mtime": 1753624266.0,
+    "ast_hash": "b031a10e310f0241d2d1079ae22601e0",
+    "semantic_hash": "b031a10e310f0241d2d1079ae22601e0"
+  },
+  "scripts/uosc/lib/intl.lua": {
+    "mtime": 1701900119.0,
+    "ast_hash": "fe0e0f98c631b4f1607f73a5d06bffed",
+    "semantic_hash": "fe0e0f98c631b4f1607f73a5d06bffed"
+  },
+  "scripts/uosc/lib/menus.lua": {
+    "mtime": 1753624261.0,
+    "ast_hash": "9c7a3ab7f2a1f87b61b74b1f1253fcdc",
+    "semantic_hash": "9c7a3ab7f2a1f87b61b74b1f1253fcdc"
+  },
+  "scripts/uosc/lib/std.lua": {
+    "mtime": 1748685097.0,
+    "ast_hash": "87b7f853352644df70f1ed9f14aadd9c",
+    "semantic_hash": "87b7f853352644df70f1ed9f14aadd9c"
+  },
+  "scripts/uosc/lib/text.lua": {
+    "mtime": 1754466803.0,
+    "ast_hash": "c298e177c85fc5d938d5baab0a85cf98",
+    "semantic_hash": "c298e177c85fc5d938d5baab0a85cf98"
+  },
+  "scripts/uosc/lib/utils.lua": {
+    "mtime": 1757781188.0,
+    "ast_hash": "5b4a507b4c91a633209bde0fc249e50d",
+    "semantic_hash": "5b4a507b4c91a633209bde0fc249e50d"
+  },
+  "scripts/uosc/main.lua": {
+    "mtime": 1757781209.0,
+    "ast_hash": "0acf136290e26108a8895a47c2b7225c",
+    "semantic_hash": "0acf136290e26108a8895a47c2b7225c"
+  },
+  "README.md": {
+    "mtime": 1785520679.2698889,
+    "ast_hash": "ee92ba03960a66bb4bd15131c2dfef6c",
+    "semantic_hash": "ee92ba03960a66bb4bd15131c2dfef6c"
+  },
+  "cuda-crop-cpp/CMakeLists.txt": {
+    "mtime": 1783497631.751121,
+    "ast_hash": "e79ed2a387b0ac39d2be2c95d3aa1e77",
+    "semantic_hash": "e79ed2a387b0ac39d2be2c95d3aa1e77"
+  }
+}
