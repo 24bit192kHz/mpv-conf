@@ -6,8 +6,9 @@ genre_ids=16
 min_score=0.0
 skip_protocols=http,https,rtmp,rtsp
 # Genre 16 = "Animation" also matches Pixar/Disney/Arcane; Anime4K's
-# line-art tuning suits Japanese anime, not western 3D CGI. Require the
-# match's original language to be Japanese. Set no to classify all
-# animation as anime.
+# line-art tuning suits Japanese anime, not western 3D CGI. Require a
+# Japanese signal: TMDB original language ja OR a ja audio track in the
+# file (catches co-productions TMDB tags en, like Edgerunners). Set no
+# to classify all animation as anime.
 japanese_only=yes
 debug=no
