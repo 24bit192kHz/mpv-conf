@@ -10,6 +10,15 @@
 --  https://github.com/mar04/chapters_for_mpv
 --  https://github.com/po5/chapterskip/blob/master/chapterskip.lua
 
+-- [local patches, not upstream -- drop when rebasing on a fixed release]
+--  1. file-loaded re-arms one chapterskip evaluation shortly after load:
+--     on playlist auto-advance, EOF/seek/pause churn kills the opening
+--     countdown, and the chapter observer never refires (chapter stays 0),
+--     so the opening of the next episode was never skipped.
+--  2. g_autoskip_disabled is re-evaluated per file -- the upstream
+--     one-way latch kept autoskip disabled forever once any excluded
+--     file played earlier in the session.
+
 local o = {
 	-----Silence Skip Settings-----
 	silence_audio_level = -40,
@@ -1323,7 +1332,7 @@ mp.observe_property("chapter", "number", chapterskip) -- chapterskip.lua
 mp.register_event('file-loaded', function()
 	file_length = (mp.get_property_native('duration') or 0)
 	g_filepath = (mp.get_property('path') or '') --1.3.4# get filepath needed for exclusion_check function
-	if exclusion_check() then g_autoskip_disabled = true end --1.3.4# disable / enable autoskip based on exclusion_check
+	if exclusion_check() then g_autoskip_disabled = true else g_autoskip_disabled = false end --1.3.4# disable / enable autoskip based on exclusion_check [local patch: re-enable per file, was one-way latch]
 
 	if o.playlist_osd and g_playlist_pos > 0 then playlist_osd = true end
 	if playlist_osd and not autoskip_playlist_osd then
@@ -1339,6 +1348,16 @@ mp.register_event('file-loaded', function()
 	initial_chapter_count = mp.get_property_number("chapter-list/count")
 	if initial_chapter_count > 0 and chapter_state ~= 'external-chapters' then chapter_state = 'internal-chapters' end
 	prep_chapterskip_var()
+
+	--[local patch] re-arm: the chapter observer only fires on transitions,
+	--which playlist auto-advance can miss entirely (see header note 1).
+	--chapterskip's own guards (skipped table, countdown flag,
+	--g_autoskip_disabled) keep this from double-firing.
+	mp.add_timeout(1, function()
+		if not g_autoskip_countdown_flag then
+			chapterskip(nil, mp.get_property_number('chapter') or 0)
+		end
+	end)
 end)
 
 mp.add_hook("on_load", 50, function()
