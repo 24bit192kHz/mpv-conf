@@ -1,0 +1,61 @@
+# dynamic-crop CUDA backend options.
+# Identifier is dynamic_crop (underscore): mpv sanitizes the hyphen in
+# scripts/dynamic-crop.lua's script name. A hyphen-named conf file would be
+# silently ignored -- verified empirically on mpv 0.41.
+# Moved verbatim from mpv.conf's script-opts-append lines (review 2026-08).
+enabled=yes
+cycle_key=C
+backend=cuda
+project=~~/cuda-crop-cpp
+binary=~~/cuda-crop-cpp/build/cuda-crop-cpp
+daemon_idle_timeout=10.0
+legacy_script=~~/script-modules/dynamic-crop-legacy.lua
+fallback_failures=2
+apply_mode=transform
+panscan_letterbox=1.0
+panscan_full=0.0
+panscan_target_aspect=1.8
+# Detection starts 0.3s ahead of playback; the wide read-ahead window below
+# carries the real lookahead.
+scan_ahead_seconds=0.3
+scan_seconds=3
+# Scan 10s of timeline per pass. Measured on RTX 3080 Ti (HEVC 1080p nvdec):
+# 10s window = ~0.32s wall (31x realtime) -- fork+CUDA-init amortizes, so a
+# big window is nearly free and makes scheduling immune to scan stalls
+# (GPU contention, slow storage). Restore acceptance window grows with it.
+read_ahead_seconds=10
+apply_before_seconds=0.0
+restore_before_seconds=0.0
+# Apply 2 frames early so the crop lands ON the cut instead of ~1 frame
+# after (baseline measurement: +12ms mean / +43ms max without lead).
+presentation_lead_frames=2.0
+presentation_lag_frames=0.0
+symmetry_tolerance=96
+min_letterbox_aspect=1.8
+max_letterbox_aspect=2.60
+min_letterbox_crop_ratio=0.03
+restore_grace_seconds=0.0
+# Restore gates (defaults: head 0.30 / min_lead 0.50 / transient 0.24).
+# Tightened for rapid AR switching (IMAX-style content has genuine 0.25-0.5s
+# segments that the old 0.24s transient suppression swallowed). With a 10s
+# lookahead window the min-lead guard barely needs to exist.
+restore_head_guard_seconds=0.10
+restore_min_lead_seconds=0.15
+transient_revert_seconds=0.10
+scan_interval=0.01
+detect_limit=2
+detect_round=2
+# 2 votes: measured identical tracking with 1 on clean sources (the
+# 2-frame presentation lead absorbs the ~0.08s confirmation), but 2 keeps
+# a margin against single-frame boundary artifacts on noisier encodes.
+min_votes=2
+sample_step=1
+# Tuning-time diagnostics; off in normal use (per-scan I/O).
+telemetry=no
+# Keep mpv's IPC path stable across sidecar startup. Without this,
+# start_sidecar() re-points input-ipc-server to
+# /tmp/mpv-dynamic-crop-<pid>.sock (scripts/dynamic-crop.lua:101-104);
+# already-connected clients keep their fds, but NEW connections to
+# /tmp/mpvsocket (hyprshaderd HDR detection, remotes) would fail until
+# the sidecar stops. Pinning the path avoids the gap entirely.
+mpv_socket=/tmp/mpvsocket

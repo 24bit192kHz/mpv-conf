@@ -100,8 +100,14 @@ local function start_sidecar()
     sidecar_started = true
     sidecar_socket = script_ipc_socket()
     if not ipc_server_assigned then
-        os.remove(sidecar_socket)
-        mp.set_property("input-ipc-server", sidecar_socket)
+        -- If mpv already listens on the target path (e.g. input-ipc-server in
+        -- mpv.conf matches dynamic_crop-mpv_socket), reuse the live listener:
+        -- set_property with an identical value is a no-op in mpv, so removing
+        -- the socket first would leave the sidecar with nothing to connect to.
+        if mp.get_property("input-ipc-server", "") ~= sidecar_socket then
+            os.remove(sidecar_socket)
+            mp.set_property("input-ipc-server", sidecar_socket)
+        end
         ipc_server_assigned = true
     end
     local binary = expand_path(opts.binary)
@@ -759,17 +765,20 @@ local function queue_crop(crop, scan_start, parsed)
         return
     end
     if is_full_frame and not immediate_seek_restore and now >= needed_at then
+        -- Late restore: detection caught up only after the transition. The
+        -- old behavior dropped the event permanently (re-detection is late
+        -- again -> dropped again -> crop stuck until seek/mode cycle).
+        -- Reschedule ~now instead; the next scan corrects it if the content
+        -- has already moved on to another aspect.
         log(string.format(
-            "restore_ignored reason=late_full crop=%s needed_at=%.3f detected_at=%.3f relative=%.3f head_guard=%.3f tail_guard=%.3f version=%s",
+            "restore_late_applied crop=%s needed_at=%.3f detected_at=%.3f late_by=%.3f version=%s",
             crop,
             needed_at,
             now,
-            relative_seconds,
-            opts.restore_head_guard_seconds,
-            opts.restore_tail_guard_seconds,
+            now - needed_at,
             script_version
         ))
-        return
+        needed_at = now + 0.02
     end
     if is_full_frame and not immediate_seek_restore and relative_seconds <= opts.restore_head_guard_seconds then
         log(string.format(

@@ -39,7 +39,7 @@ constexpr int kCropdetectPrerollFrames = 2;
 constexpr int kCropdetectLetterboxHeightPad = 2;
 constexpr int kEquivalentCropSizeTolerance = 8;
 constexpr int kEquivalentCropOffsetTolerance = 4;
-constexpr double kTransientRevertMaxSeconds = 0.24;
+constexpr double kTransientRevertMaxSeconds = 0.10;
 
 struct CropBox {
     int width = 0;
