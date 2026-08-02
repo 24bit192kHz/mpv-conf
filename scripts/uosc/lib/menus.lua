@@ -202,6 +202,22 @@ function create_self_updating_menu_opener(opts)
 end
 
 ---@param opts {title: string; type: string; prop: string; enable_prop?: string; secondary?: {prop: string; icon: string; enable_prop?: string}; load_command: string; download_command?: string}
+-- [local patch, not upstream] integration with scripts/sub-lang-filter.lua,
+-- which publishes its allow-list to user-data/sub_lang_filter. Embedded
+-- subtitle tracks outside the allow-list are hidden from this menu; external
+-- tracks (ar_subs fetches, manual loads) always stay. Remove this helper and
+-- the `skip_hidden_sub` guard below when rebasing uosc on a new upstream.
+local function sub_lang_filter_hidden(lang)
+	local filter = mp.get_property_native('user-data/sub_lang_filter')
+	if not (filter and filter.active and filter.allowed) then return false end
+	local primary = (lang or ''):lower():match('^[^-]+')
+	if primary == '' then return true end
+	for _, code in ipairs(filter.allowed) do
+		if code == primary then return false end
+	end
+	return true
+end
+
 function create_select_tracklist_type_menu_opener(opts)
 	local snd = opts.secondary
 	local function get_props()
@@ -247,7 +263,9 @@ function create_select_tracklist_type_menu_opener(opts)
 		table.insert(track_external_actions, {name = 'remove', icon = 'delete', label = t('Remove') .. ' (del)'})
 
 		for _, track in ipairs(tracklist) do
-			if track.type == opts.type then
+			local skip_hidden_sub = opts.type == 'sub' and not track.external
+				and sub_lang_filter_hidden(track.lang)
+			if track.type == opts.type and not skip_hidden_sub then
 				local hint_values = {}
 				local track_selected = track.selected and track.id == track_prop_index
 				local snd_selected = snd and track.id == snd_prop_index
