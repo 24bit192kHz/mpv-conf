@@ -79,6 +79,17 @@ make -C /tmp/mpv-mpris && cp /tmp/mpv-mpris/mpris.so ~/.config/mpv/scripts/
 
 Or install the distro package where available (`pacman -S mpv-mpris`).
 
+### autochapters dependency
+
+`scripts/autochapters/` (po5/mpv-auto-chapters) fetches anime OP/ED chapters
+for files that ship none, feeding SmartSkip. It needs **guessit** on PATH:
+
+```sh
+uv tool install guessit
+```
+
+The anime-offline-database cache downloads automatically on first run.
+
 ## API keys
 
 Keys are **intentionally not committed**. Copy `.env.example` to `.env` and fill it:

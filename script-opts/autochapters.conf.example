@@ -1,0 +1,14 @@
+# autochapters (po5) — fetches anime OP/ED chapters from the aniskip API
+# for files that have none, so SmartSkip/chapterskip have something to
+# skip. Filename parsed locally with guessit; the offline
+# anime-offline-database cache downloads on first run.
+create_chapters=yes
+on_file_load=yes
+# never touch files that ship embedded chapters (BluRay remuxes etc.)
+search_only_when_chapters_missing=yes
+allow_loose_matches=yes
+keep_previous_chapters=no
+# brief pause while searching keeps the skip chapters from landing after
+# the opening already played; cached lookups are near-instant.
+pause_on_search=yes
+hook=no
