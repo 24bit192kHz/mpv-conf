@@ -1,10 +1,16 @@
--- shader-announce: OSD feedback whenever the active glsl-shaders chain
--- changes -- conditional profiles ([Anime], [hdr-passthrough]) swap the
--- list silently otherwise, so you never know which chain is rendering.
--- Labels for the Anime4K presets match the ALT+1..7 binding texts so the
--- manual and automatic announcements read identically.
+-- shader-announce: logs the active glsl-shaders chain on every change.
+-- OSD stays quiet by default: automatic profile swaps ([Anime],
+-- [hdr-passthrough]) only hit the terminal, and manual ALT+1..7 switches
+-- already show their own text via the bindings. Set debug=yes to get an
+-- OSD announcement for every change, including profile swaps.
 
 local mp = require "mp"
+local options = require "mp.options"
+
+local opts = {
+    debug = false,
+}
+options.read_options(opts, "shader_announce")
 
 local last_label = nil
 
@@ -51,7 +57,9 @@ local function on_shaders(_, value)
     if label == last_label then return end
     last_label = label
     mp.msg.info(label)
-    mp.commandv("show-text", label, 2500)
+    if opts.debug then
+        mp.commandv("show-text", label, 2500)
+    end
 end
 
 mp.observe_property("glsl-shaders", "native", on_shaders)
