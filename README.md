@@ -67,6 +67,18 @@ irm https://raw.githubusercontent.com/24bit192kHz/mpv-conf/master/install.ps1 | 
 Installs to `~/.config/mpv` (Linux/macOS) or `%APPDATA%\mpv` (Windows). The installer
 backs up any existing mpv config folder before replacing it.
 
+### MPRIS (Linux, optional)
+
+Desktop media-key integration via [mpv-mpris](https://github.com/hoyon/mpv-mpris).
+The compiled `scripts/mpris.so` is gitignored; rebuild it after installing:
+
+```sh
+git clone --depth 1 https://github.com/hoyon/mpv-mpris /tmp/mpv-mpris
+make -C /tmp/mpv-mpris && cp /tmp/mpv-mpris/mpris.so ~/.config/mpv/scripts/
+```
+
+Or install the distro package where available (`pacman -S mpv-mpris`).
+
 ## API keys
 
 Keys are **intentionally not committed**. Copy `.env.example` to `.env` and fill it:
