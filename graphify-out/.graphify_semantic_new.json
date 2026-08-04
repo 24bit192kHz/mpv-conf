@@ -1,0 +1,452 @@
+{
+  "nodes": [
+    {
+      "id": "readme_ar_subs",
+      "label": "ar_subs — Arabic subtitle system",
+      "file_type": "concept",
+      "source_file": "/home/btw/.config/mpv/README.md",
+      "source_location": null,
+      "source_url": null,
+      "captured_at": null,
+      "author": null,
+      "contributor": null
+    },
+    {
+      "id": "readme_autosubsync",
+      "label": "autosubsync — auto-timing",
+      "file_type": "concept",
+      "source_file": "/home/btw/.config/mpv/README.md",
+      "source_location": null,
+      "source_url": null,
+      "captured_at": null,
+      "author": null,
+      "contributor": null
+    },
+    {
+      "id": "readme_subscene_offline_index",
+      "label": "Offline Subscene index (subtitle-api Docker FTS5)",
+      "file_type": "concept",
+      "source_file": "/home/btw/.config/mpv/README.md",
+      "source_location": null,
+      "source_url": null,
+      "captured_at": null,
+      "author": null,
+      "contributor": null
+    },
+    {
+      "id": "readme_subsource",
+      "label": "SubSource.net",
+      "file_type": "concept",
+      "source_file": "/home/btw/.config/mpv/README.md",
+      "source_location": null,
+      "source_url": null,
+      "captured_at": null,
+      "author": null,
+      "contributor": null
+    },
+    {
+      "id": "readme_subdl",
+      "label": "SubDL",
+      "file_type": "concept",
+      "source_file": "/home/btw/.config/mpv/README.md",
+      "source_location": null,
+      "source_url": null,
+      "captured_at": null,
+      "author": null,
+      "contributor": null
+    },
+    {
+      "id": "readme_tmdb",
+      "label": "TMDB (movie/series metadata)",
+      "file_type": "concept",
+      "source_file": "/home/btw/.config/mpv/README.md",
+      "source_location": null,
+      "source_url": null,
+      "captured_at": null,
+      "author": null,
+      "contributor": null
+    },
+    {
+      "id": "readme_tvdb",
+      "label": "TVDB (anime episode metadata)",
+      "file_type": "concept",
+      "source_file": "/home/btw/.config/mpv/README.md",
+      "source_location": null,
+      "source_url": null,
+      "captured_at": null,
+      "author": null,
+      "contributor": null
+    },
+    {
+      "id": "readme_zstd_cache",
+      "label": "zstd-19 compressed-at-rest cache",
+      "file_type": "rationale",
+      "source_file": "/home/btw/.config/mpv/README.md",
+      "source_location": null,
+      "source_url": null,
+      "captured_at": null,
+      "author": null,
+      "contributor": null,
+      "rationale": "Subs and refs stored compressed (.ass.zst/.srt.zst, zstd-19 via in-process LuaJIT FFI, no subprocess) under one cache root, decompressed into an LRU hot/ dir on load in sub-milliseconds; keeps disk footprint small while load stays instant."
+    },
+    {
+      "id": "readme_ffsubsync",
+      "label": "ffsubsync (sub-to-sub alignment engine)",
+      "file_type": "concept",
+      "source_file": "/home/btw/.config/mpv/README.md",
+      "source_location": null,
+      "source_url": null,
+      "captured_at": null,
+      "author": null,
+      "contributor": null
+    },
+    {
+      "id": "readme_anime_detect",
+      "label": "anime_detect.lua (TMDB anime classifier)",
+      "file_type": "concept",
+      "source_file": "/home/btw/.config/mpv/README.md",
+      "source_location": null,
+      "source_url": null,
+      "captured_at": null,
+      "author": null,
+      "contributor": null
+    },
+    {
+      "id": "readme_anime_profile",
+      "label": "[Anime] auto profile",
+      "file_type": "concept",
+      "source_file": "/home/btw/.config/mpv/README.md",
+      "source_location": null,
+      "source_url": null,
+      "captured_at": null,
+      "author": null,
+      "contributor": null
+    },
+    {
+      "id": "readme_anime4k",
+      "label": "Anime4K v4.x Mode A",
+      "file_type": "concept",
+      "source_file": "/home/btw/.config/mpv/README.md",
+      "source_location": null,
+      "source_url": null,
+      "captured_at": null,
+      "author": null,
+      "contributor": null
+    },
+    {
+      "id": "readme_shaders",
+      "label": "Always-on shader trio (KrigBilateral + SSimSuperRes + SSimDownscaler)",
+      "file_type": "concept",
+      "source_file": "/home/btw/.config/mpv/README.md",
+      "source_location": null,
+      "source_url": null,
+      "captured_at": null,
+      "author": null,
+      "contributor": null
+    },
+    {
+      "id": "readme_smartskip",
+      "label": "SmartSkip (OP/ED/Preview auto-skip)",
+      "file_type": "concept",
+      "source_file": "/home/btw/.config/mpv/README.md",
+      "source_location": null,
+      "source_url": null,
+      "captured_at": null,
+      "author": null,
+      "contributor": null
+    },
+    {
+      "id": "readme_autochapters",
+      "label": "autochapters (po5/mpv-auto-chapters)",
+      "file_type": "concept",
+      "source_file": "/home/btw/.config/mpv/README.md",
+      "source_location": null,
+      "source_url": null,
+      "captured_at": null,
+      "author": null,
+      "contributor": null
+    },
+    {
+      "id": "readme_guessit",
+      "label": "guessit (PATH dependency)",
+      "file_type": "concept",
+      "source_file": "/home/btw/.config/mpv/README.md",
+      "source_location": null,
+      "source_url": null,
+      "captured_at": null,
+      "author": null,
+      "contributor": null
+    },
+    {
+      "id": "readme_cuda_crop_cpp",
+      "label": "cuda-crop-cpp (C++ dynamic crop sidecar)",
+      "file_type": "concept",
+      "source_file": "/home/btw/.config/mpv/README.md",
+      "source_location": null,
+      "source_url": null,
+      "captured_at": null,
+      "author": null,
+      "contributor": null
+    },
+    {
+      "id": "readme_uosc",
+      "label": "uosc UI",
+      "file_type": "concept",
+      "source_file": "/home/btw/.config/mpv/README.md",
+      "source_location": null,
+      "source_url": null,
+      "captured_at": null,
+      "author": null,
+      "contributor": null
+    },
+    {
+      "id": "readme_mpv_mpris",
+      "label": "mpv-mpris (MPRIS media-key integration)",
+      "file_type": "concept",
+      "source_file": "/home/btw/.config/mpv/README.md",
+      "source_location": null,
+      "source_url": null,
+      "captured_at": null,
+      "author": null,
+      "contributor": null
+    },
+    {
+      "id": "readme_memo",
+      "label": "memo (playback history)",
+      "file_type": "concept",
+      "source_file": "/home/btw/.config/mpv/README.md",
+      "source_location": null,
+      "source_url": null,
+      "captured_at": null,
+      "author": null,
+      "contributor": null
+    }
+  ],
+  "edges": [
+    {
+      "source": "readme_ar_subs",
+      "target": "readme_subscene_offline_index",
+      "relation": "references",
+      "confidence": "EXTRACTED",
+      "confidence_score": 1.0,
+      "source_file": "/home/btw/.config/mpv/README.md",
+      "source_location": null,
+      "weight": 1.0
+    },
+    {
+      "source": "readme_ar_subs",
+      "target": "readme_subsource",
+      "relation": "references",
+      "confidence": "EXTRACTED",
+      "confidence_score": 1.0,
+      "source_file": "/home/btw/.config/mpv/README.md",
+      "source_location": null,
+      "weight": 1.0
+    },
+    {
+      "source": "readme_ar_subs",
+      "target": "readme_subdl",
+      "relation": "references",
+      "confidence": "EXTRACTED",
+      "confidence_score": 1.0,
+      "source_file": "/home/btw/.config/mpv/README.md",
+      "source_location": null,
+      "weight": 1.0
+    },
+    {
+      "source": "readme_subdl",
+      "target": "readme_tmdb",
+      "relation": "references",
+      "confidence": "EXTRACTED",
+      "confidence_score": 1.0,
+      "source_file": "/home/btw/.config/mpv/README.md",
+      "source_location": null,
+      "weight": 1.0
+    },
+    {
+      "source": "readme_subdl",
+      "target": "readme_tvdb",
+      "relation": "references",
+      "confidence": "EXTRACTED",
+      "confidence_score": 1.0,
+      "source_file": "/home/btw/.config/mpv/README.md",
+      "source_location": null,
+      "weight": 1.0
+    },
+    {
+      "source": "readme_ar_subs",
+      "target": "readme_zstd_cache",
+      "relation": "references",
+      "confidence": "EXTRACTED",
+      "confidence_score": 1.0,
+      "source_file": "/home/btw/.config/mpv/README.md",
+      "source_location": null,
+      "weight": 1.0
+    },
+    {
+      "source": "readme_autosubsync",
+      "target": "readme_zstd_cache",
+      "relation": "references",
+      "confidence": "EXTRACTED",
+      "confidence_score": 1.0,
+      "source_file": "/home/btw/.config/mpv/README.md",
+      "source_location": null,
+      "weight": 1.0
+    },
+    {
+      "source": "readme_autosubsync",
+      "target": "readme_ffsubsync",
+      "relation": "references",
+      "confidence": "EXTRACTED",
+      "confidence_score": 1.0,
+      "source_file": "/home/btw/.config/mpv/README.md",
+      "source_location": null,
+      "weight": 1.0
+    },
+    {
+      "source": "readme_autosubsync",
+      "target": "readme_ar_subs",
+      "relation": "shares_data_with",
+      "confidence": "INFERRED",
+      "confidence_score": 0.95,
+      "source_file": "/home/btw/.config/mpv/README.md",
+      "source_location": null,
+      "weight": 1.0
+    },
+    {
+      "source": "readme_zstd_cache",
+      "target": "readme_ar_subs",
+      "relation": "rationale_for",
+      "confidence": "INFERRED",
+      "confidence_score": 0.85,
+      "source_file": "/home/btw/.config/mpv/README.md",
+      "source_location": null,
+      "weight": 1.0
+    },
+    {
+      "source": "readme_zstd_cache",
+      "target": "readme_autosubsync",
+      "relation": "rationale_for",
+      "confidence": "INFERRED",
+      "confidence_score": 0.85,
+      "source_file": "/home/btw/.config/mpv/README.md",
+      "source_location": null,
+      "weight": 1.0
+    },
+    {
+      "source": "readme_anime_detect",
+      "target": "readme_tmdb",
+      "relation": "references",
+      "confidence": "EXTRACTED",
+      "confidence_score": 1.0,
+      "source_file": "/home/btw/.config/mpv/README.md",
+      "source_location": null,
+      "weight": 1.0
+    },
+    {
+      "source": "readme_anime_profile",
+      "target": "readme_anime_detect",
+      "relation": "references",
+      "confidence": "EXTRACTED",
+      "confidence_score": 1.0,
+      "source_file": "/home/btw/.config/mpv/README.md",
+      "source_location": null,
+      "weight": 1.0
+    },
+    {
+      "source": "readme_anime_profile",
+      "target": "readme_anime4k",
+      "relation": "references",
+      "confidence": "EXTRACTED",
+      "confidence_score": 1.0,
+      "source_file": "/home/btw/.config/mpv/README.md",
+      "source_location": null,
+      "weight": 1.0
+    },
+    {
+      "source": "readme_anime4k",
+      "target": "readme_shaders",
+      "relation": "conceptually_related_to",
+      "confidence": "EXTRACTED",
+      "confidence_score": 1.0,
+      "source_file": "/home/btw/.config/mpv/README.md",
+      "source_location": null,
+      "weight": 1.0
+    },
+    {
+      "source": "readme_autochapters",
+      "target": "readme_smartskip",
+      "relation": "shares_data_with",
+      "confidence": "EXTRACTED",
+      "confidence_score": 1.0,
+      "source_file": "/home/btw/.config/mpv/README.md",
+      "source_location": null,
+      "weight": 1.0
+    },
+    {
+      "source": "readme_autochapters",
+      "target": "readme_guessit",
+      "relation": "references",
+      "confidence": "EXTRACTED",
+      "confidence_score": 1.0,
+      "source_file": "/home/btw/.config/mpv/README.md",
+      "source_location": null,
+      "weight": 1.0
+    },
+    {
+      "source": "readme_smartskip",
+      "target": "readme_anime_detect",
+      "relation": "conceptually_related_to",
+      "confidence": "INFERRED",
+      "confidence_score": 0.75,
+      "source_file": "/home/btw/.config/mpv/README.md",
+      "source_location": null,
+      "weight": 1.0
+    }
+  ],
+  "hyperedges": [
+    {
+      "id": "subtitle_source_waterfall",
+      "label": "ar_subs three-source fetch waterfall",
+      "nodes": [
+        "readme_ar_subs",
+        "readme_subscene_offline_index",
+        "readme_subsource",
+        "readme_subdl"
+      ],
+      "relation": "participate_in",
+      "confidence": "EXTRACTED",
+      "confidence_score": 1.0,
+      "source_file": "/home/btw/.config/mpv/README.md"
+    },
+    {
+      "id": "anime_stack",
+      "label": "Anime pipeline (detect -> profile -> Anime4K shaders)",
+      "nodes": [
+        "readme_anime_detect",
+        "readme_anime_profile",
+        "readme_anime4k",
+        "readme_shaders"
+      ],
+      "relation": "form",
+      "confidence": "EXTRACTED",
+      "confidence_score": 1.0,
+      "source_file": "/home/btw/.config/mpv/README.md"
+    },
+    {
+      "id": "compressed_at_rest_convention",
+      "label": "zstd compressed-at-rest cache convention",
+      "nodes": [
+        "readme_ar_subs",
+        "readme_autosubsync",
+        "readme_zstd_cache"
+      ],
+      "relation": "implement",
+      "confidence": "INFERRED",
+      "confidence_score": 0.85,
+      "source_file": "/home/btw/.config/mpv/README.md"
+    }
+  ],
+  "input_tokens": 0,
+  "output_tokens": 40121
+}

@@ -5,9 +5,9 @@
     "semantic_hash": "3517adaab2175ce03f658a33220fd83d"
   },
   "cuda-crop-cpp/src/main.cpp": {
-    "mtime": 1783497631.751121,
-    "ast_hash": "915068b98eea0585adc2748c3f44f1b4",
-    "semantic_hash": "915068b98eea0585adc2748c3f44f1b4"
+    "mtime": 1785642922.5092566,
+    "ast_hash": "460e75018fbd4a1a87a8dee7f9c6667d",
+    "semantic_hash": "460e75018fbd4a1a87a8dee7f9c6667d"
   },
   "install.ps1": {
     "mtime": 1785515247.6366224,
@@ -140,9 +140,9 @@
     "semantic_hash": "7bddb7337181465b43465fe5f8be5ffc"
   },
   "script-modules/ar_subs/util/match.lua": {
-    "mtime": 1785455525.38562,
-    "ast_hash": "74d935b80ea74cfc1f761712dafa8e84",
-    "semantic_hash": "74d935b80ea74cfc1f761712dafa8e84"
+    "mtime": 1785607993.8751538,
+    "ast_hash": "fe55476861837924a11b714039e99a78",
+    "semantic_hash": "fe55476861837924a11b714039e99a78"
   },
   "script-modules/ar_subs/util/media.lua": {
     "mtime": 1785455525.3844538,
@@ -175,9 +175,9 @@
     "semantic_hash": "a0c18af9cde45eb4cdb4f37b85659d1f"
   },
   "scripts/SmartSkip.lua": {
-    "mtime": 1785515247.6376224,
-    "ast_hash": "99bf1d4a9200cc0a97028df24afe4baf",
-    "semantic_hash": "99bf1d4a9200cc0a97028df24afe4baf"
+    "mtime": 1785651007.6856349,
+    "ast_hash": "6253047e3ef9d0b15795d10e6c1373fa",
+    "semantic_hash": "6253047e3ef9d0b15795d10e6c1373fa"
   },
   "scripts/anime_detect.lua": {
     "mtime": 1785521982.8341403,
@@ -190,9 +190,9 @@
     "semantic_hash": "3ec403eb903b6103ed678ec386dbd1a8"
   },
   "scripts/ar_subs.lua": {
-    "mtime": 1785515247.6386225,
-    "ast_hash": "abb01c1e3f1762e6edb9ffc07d475f5d",
-    "semantic_hash": "abb01c1e3f1762e6edb9ffc07d475f5d"
+    "mtime": 1785607993.8761537,
+    "ast_hash": "179330331b1e0169e2d022ec501053c5",
+    "semantic_hash": "179330331b1e0169e2d022ec501053c5"
   },
   "scripts/auto-save-state.lua": {
     "mtime": 1782477127.7375798,
@@ -230,9 +230,9 @@
     "semantic_hash": "d139e10b266303e08a92fab65b718a98"
   },
   "scripts/dynamic-crop.lua": {
-    "mtime": 1785199851.6643815,
-    "ast_hash": "60d79d13b42798a93bf6be443fe88d1c",
-    "semantic_hash": "60d79d13b42798a93bf6be443fe88d1c"
+    "mtime": 1785642922.5102565,
+    "ast_hash": "ce188e442dbc79eab744bc6ce489189e",
+    "semantic_hash": "ce188e442dbc79eab744bc6ce489189e"
   },
   "scripts/evafast.lua": {
     "mtime": 1782477127.7375798,
@@ -445,9 +445,9 @@
     "semantic_hash": "fe0e0f98c631b4f1607f73a5d06bffed"
   },
   "scripts/uosc/lib/menus.lua": {
-    "mtime": 1753624261.0,
-    "ast_hash": "9c7a3ab7f2a1f87b61b74b1f1253fcdc",
-    "semantic_hash": "9c7a3ab7f2a1f87b61b74b1f1253fcdc"
+    "mtime": 1785642922.5102565,
+    "ast_hash": "547eb54b27ede4752593044e0056e491",
+    "semantic_hash": "547eb54b27ede4752593044e0056e491"
   },
   "scripts/uosc/lib/std.lua": {
     "mtime": 1748685097.0,
@@ -470,13 +470,53 @@
     "semantic_hash": "0acf136290e26108a8895a47c2b7225c"
   },
   "README.md": {
-    "mtime": 1785520679.2698889,
-    "ast_hash": "ee92ba03960a66bb4bd15131c2dfef6c",
-    "semantic_hash": "ee92ba03960a66bb4bd15131c2dfef6c"
+    "mtime": 1785651007.6856349,
+    "ast_hash": "9a67794cf804cea8cc7c0e6bb2938013",
+    "semantic_hash": "9a67794cf804cea8cc7c0e6bb2938013"
   },
   "cuda-crop-cpp/CMakeLists.txt": {
     "mtime": 1783497631.751121,
     "ast_hash": "e79ed2a387b0ac39d2be2c95d3aa1e77",
     "semantic_hash": "e79ed2a387b0ac39d2be2c95d3aa1e77"
+  },
+  "scripts/clipshot.lua": {
+    "mtime": 1785642922.5102565,
+    "ast_hash": "35fd1f4906d5ba7043360a71f38c9cc0",
+    "semantic_hash": "35fd1f4906d5ba7043360a71f38c9cc0"
+  },
+  "scripts/cycle-through-existing.lua": {
+    "mtime": 1785642922.5102565,
+    "ast_hash": "93f49d341d6876c0c93c6a8f25e5f84f",
+    "semantic_hash": "93f49d341d6876c0c93c6a8f25e5f84f"
+  },
+  "scripts/shader-announce.lua": {
+    "mtime": 1785643759.8064659,
+    "ast_hash": "dcd1feca597d340cf72c5ea6ce978414",
+    "semantic_hash": "dcd1feca597d340cf72c5ea6ce978414"
+  },
+  "scripts/sub-lang-filter.lua": {
+    "mtime": 1785642922.5102565,
+    "ast_hash": "26613cf7c46200a1135ca2dc6bad8cbb",
+    "semantic_hash": "26613cf7c46200a1135ca2dc6bad8cbb"
+  },
+  "CLAUDE.md": {
+    "mtime": 1785607993.8651536,
+    "ast_hash": "4475058d476f49a040fa6e9ba602f5b3",
+    "semantic_hash": "4475058d476f49a040fa6e9ba602f5b3"
+  },
+  "scripts/autochapters/anime.json": {
+    "mtime": 1785650176.6334493,
+    "ast_hash": "f09a9521772a5d1bb96bd72ea98ac375",
+    "semantic_hash": "f09a9521772a5d1bb96bd72ea98ac375"
+  },
+  "scripts/autochapters/main.lua": {
+    "mtime": 1785651007.6856349,
+    "ast_hash": "326e8d85a48295f71a65c6a816c488ca",
+    "semantic_hash": "326e8d85a48295f71a65c6a816c488ca"
+  },
+  "scripts/autochapters/relations.json": {
+    "mtime": 1785650173.3119,
+    "ast_hash": "7d946ed995997009daf3372a03a167d0",
+    "semantic_hash": "7d946ed995997009daf3372a03a167d0"
   }
 }
