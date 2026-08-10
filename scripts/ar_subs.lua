@@ -872,6 +872,49 @@ local function execute_search_strategies(strategies, callbacks)
     return all_subs
 end
 
+-- Fetch a season pool (cache or API) and filter it for one episode. When the
+-- CACHED pool filters to zero for the requested episode, the pool is stale:
+-- it was snapshotted before that episode's subs were uploaded to SubDL (a
+-- weekly show's subs land progressively). Refetch from the API and refresh
+-- the cache so newly-uploaded episodes are found instead of being reported
+-- missing. Returns the episode-matching subs or nil.
+--
+--   cache_key   season-level cache key
+--   queries     list of SubDL query strings
+--   search_opts execute_search_strategies options (type, should_stop, ...)
+--   filter      per-episode predicate (sub) -> bool
+--   ep_label    human string for logs, e.g. "S03E08" / "E8"
+local function season_pool_for_episode(cache_key, queries, search_opts, filter, ep_label)
+    local raw = search_cache_get(cache_key)
+    local from_cache = raw ~= nil
+    if raw then
+        mp.msg.info(string.format("SubDL: search cache hit (%d season results), filtering for %s",
+            #raw, ep_label))
+    else
+        raw = execute_search_strategies(queries, search_opts)
+        search_cache_put(cache_key, raw)
+    end
+
+    local function pick(subs)
+        if not subs then return nil end
+        local out = {}
+        for _, sub in ipairs(subs) do
+            if filter(sub) then table.insert(out, sub) end
+        end
+        return #out > 0 and out or nil
+    end
+
+    local subs = pick(raw)
+    if subs or not from_cache then return subs end
+
+    -- Cache hit but nothing for this episode: the snapshot predates the
+    -- upload. Refetch and refresh the cache once.
+    mp.msg.info(string.format("SubDL: cached season pool has no %s match, refreshing...", ep_label))
+    local fresh = execute_search_strategies(queries, search_opts)
+    search_cache_put(cache_key, fresh)
+    return pick(fresh)
+end
+
 local function fetch_sub_list_tv(show_title, season, episode, tmdb_id)
     local queries = {}
     local candidates = normalize_title_candidates(show_title)
@@ -917,24 +960,10 @@ local function fetch_sub_list_tv(show_title, season, episode, tmdb_id)
     local cache_key = string.format("tv/%s/s%d/deep%d",
         tmdb_id and ("tmdb" .. tostring(tmdb_id)) or ("t:" .. show_title:lower()),
         season or 1, DEEP_SEARCH and 1 or 0)
-    local raw_subs = search_cache_get(cache_key)
-    if raw_subs then
-        mp.msg.info(string.format("SubDL: search cache hit (%d season results), filtering for S%02dE%02d",
-            #raw_subs, season or 1, episode))
-    else
-        raw_subs = execute_search_strategies(queries, { type = "TV search" })
-        search_cache_put(cache_key, raw_subs)
-    end
+    local subs = season_pool_for_episode(
+        cache_key, queries, { type = "TV search" }, tv_episode_filter,
+        string.format("S%02dE%02d", season or 1, episode))
 
-    local subs = nil
-    if raw_subs then
-        subs = {}
-        for _, sub in ipairs(raw_subs) do
-            if tv_episode_filter(sub) then table.insert(subs, sub) end
-        end
-        if #subs == 0 then subs = nil end
-    end
-    
     if subs then
         table.sort(subs, function(a, b)
             local a_pairs = a._norm_pairs or {}
@@ -1117,28 +1146,13 @@ local function fetch_sub_list_anime(title, season, episode, tmdb_id, opts)
     local cache_key = string.format("anime/%s/s%d/deep%d",
         tmdb_id and ("tmdb" .. tostring(tmdb_id)) or ("t:" .. title:lower()),
         season or 1, DEEP_SEARCH and 1 or 0)
-    local raw_subs = search_cache_get(cache_key)
-    if raw_subs then
-        mp.msg.info(string.format("SubDL: search cache hit (%d season results), filtering for E%d",
-            #raw_subs, episode))
-    else
-        raw_subs = execute_search_strategies(queries, {
+    local subs = season_pool_for_episode(
+        cache_key, queries, {
             type = "anime search",
             should_stop = function(i, count)
                 return not DEEP_SEARCH and i >= 9 and count >= ANIME_EARLY_STOP_COUNT
             end
-        })
-        search_cache_put(cache_key, raw_subs)
-    end
-
-    local subs = nil
-    if raw_subs then
-        subs = {}
-        for _, sub in ipairs(raw_subs) do
-            if subtitle_matches_cour(sub) then table.insert(subs, sub) end
-        end
-        if #subs == 0 then subs = nil end
-    end
+        }, subtitle_matches_cour, string.format("E%d", episode))
 
     local function get_anime_release_score(sub)
         local rn = (sub.release_name or ""):lower()

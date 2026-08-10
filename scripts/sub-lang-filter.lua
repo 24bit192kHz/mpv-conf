@@ -35,9 +35,18 @@ local function norm(lang)
     return lang:lower():gsub("^%s+", ""):gsub("%s+$", "")
 end
 
+-- primary ISO 639 code: strip region/script subtags so "en-US" matches the
+-- allow-list's bare "en"/"eng"/"english" (as do pt-BR, zh-Hans-SG, sr-Latn,
+-- khk-Cyrl, es-419, ms-MY, zh-Hant-TW, ...). mpv reports sub langs subtagged.
+local function base(lang)
+    local n = norm(lang)
+    if not n then return nil end
+    return n:match("^[^%s%-_]+")
+end
+
 local function expand(lang)
     -- returns the set of equivalent codes for a language
-    local n = norm(lang)
+    local n = base(lang)
     if not n or n == "" or n == "und" or n == "unknown" then return nil end
     for _, group in ipairs(alias_groups) do
         for _, member in ipairs(group) do
@@ -76,7 +85,7 @@ end
 
 local function track_allowed(t, allowed)
     if t.external then return true end -- ar_subs fetches, manual loads
-    local n = norm(t.lang)
+    local n = base(t.lang)
     return n ~= nil and allowed[n] == true
 end
 
@@ -113,7 +122,7 @@ local function pick_default(subs, allowed)
     for _, code in ipairs(priority) do
         if allowed[code] then
             for _, t in ipairs(subs) do
-                if norm(t.lang) == code then return t end
+                if base(t.lang) == code then return t end
             end
         end
     end
