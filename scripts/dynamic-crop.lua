@@ -61,6 +61,10 @@ local sidecar_started = false
 local sidecar_command = nil
 local sidecar_socket = nil
 local ipc_server_assigned = false
+-- Set by stop_sidecar so the async exit callback can tell an intentional
+-- stop (end-file, mode switch) from a crashed sidecar; only a crash should
+-- count toward the legacy fallback.
+local sidecar_stopping = false
 local legacy_started = false
 local scan_failures = 0
 local pending_timer = nil
@@ -95,6 +99,13 @@ local function script_ipc_socket()
     return string.format("/tmp/mpv-dynamic-crop-%d.sock", pid)
 end
 
+-- Forward declarations: start_sidecar's exit callback (a) counts sidecar
+-- crashes toward the legacy fallback and (b) must release the startup pause
+-- so a dead sidecar can't leave playback permanently paused. Both are defined
+-- later in the file; declare the locals here so the closure binds them.
+local record_scan_failure
+local release_startup_pause
+
 local function start_sidecar()
     if sidecar_started then return end
     sidecar_started = true
@@ -126,13 +137,27 @@ local function start_sidecar()
             "--min-votes", tostring(opts.min_votes),
         },
         playback_only = true,
-    }, function()
+    }, function(success, result)
         sidecar_started = false
         sidecar_command = nil
+        -- A sidecar that exits on its own (not via stop_sidecar) is a crash
+        -- or silent failure. Count it toward the legacy fallback so a dead
+        -- analyzer drops to the legacy backend instead of leaving the user
+        -- behind a broken crop. (stop_sidecar sets sidecar_stopping.)
+        if not sidecar_stopping and not playback_ended() then
+            record_scan_failure(tostring(
+                (result and result.status) or (result and result.error_string) or "sidecar exited"
+            ))
+            -- The sidecar died before delivering its first scan; release the
+            -- startup pause so playback isn't left permanently paused waiting
+            -- on a message that will never come.
+            release_startup_pause()
+        end
     end)
 end
 
 stop_sidecar = function()
+    sidecar_stopping = true
     if sidecar_command then
         mp.abort_async_command(sidecar_command)
     end
@@ -229,7 +254,7 @@ local function hold_startup_until_first_scan()
     end
 end
 
-local function release_startup_pause()
+release_startup_pause = function()
     initial_scan_completed = true
     if startup_pause_active and not startup_pause_was_paused then
         mp.set_property_bool("pause", false)
@@ -264,6 +289,12 @@ local function start_legacy_backend(reason)
     end
 
     mp.msg.warn("dynamic_crop: CUDA backend unavailable, starting legacy fallback: " .. reason)
+    -- Drop the main script's C binding BEFORE the legacy dofile registers its
+    -- own C binding. Both binding the same key in the same Lua state would
+    -- leave the main cycle-mode binding shadowed by the legacy one silently.
+    if opts.cycle_key ~= "" and mp.remove_key_binding then
+        pcall(mp.remove_key_binding, "cycle-mode")
+    end
     local ok, err = pcall(dofile, legacy)
     if not ok then
         mp.msg.error("dynamic_crop: failed to start legacy fallback: " .. tostring(err))
@@ -275,7 +306,7 @@ local function cuda_binary_available()
     return info and not info.is_dir
 end
 
-local function record_scan_failure(reason)
+record_scan_failure = function(reason)
     scan_failures = scan_failures + 1
     mp.msg.warn(string.format(
         "dynamic_crop: CUDA scan failure %d/%d: %s",
@@ -929,6 +960,11 @@ local function run_scan()
 
     if not socket_ready() then
         running = false
+        -- A daemon that never creates its socket is failing, not just slow.
+        -- Count it toward the legacy fallback so repeated failures drop to the
+        -- legacy backend instead of polling an absent socket forever.
+        record_scan_failure("daemon socket not ready: " .. tostring(opts.socket))
+        if legacy_started then return end
         mp.add_timeout(0.25, run_scan)
         return
     end

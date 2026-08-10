@@ -149,13 +149,16 @@ function M.get(ns, key, max_age)
   local sql = string.format(
     "SELECT writefile('%s', v), updated FROM kv WHERE ns='%s' AND k='%s';",
     zst, sql_safe(ns), sql_safe(key))
-  local ok = run_raw("sqlite3 -batch -list " .. sh_quote(M._db) .. " " .. sh_quote(sql)
+  local ok = run_raw("sqlite3 -batch -noheader -separator '\\t' " .. sh_quote(M._db) .. " " .. sh_quote(sql)
     .. " > " .. sh_quote(meta))
 
   local data = nil
   if ok then
     local line = read_file(meta)
-    local updated = line and line:match("|(%d+)")
+    -- writefile() yields two columns: bytes-written, updated. Parse the
+    -- trailing updated timestamp (the bytes column may be 0 when the row is
+    -- missing / NULL). -noheader + tab separator avoids -list's | collapsing.
+    local updated = line and line:match("(%d+)%s*$")
     updated = tonumber(updated)
     if updated and (not max_age or (os.time() - updated) <= max_age) then
       local raw = tmp_path("out")

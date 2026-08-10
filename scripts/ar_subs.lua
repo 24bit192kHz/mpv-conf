@@ -95,6 +95,13 @@ local MANUAL_MAX_DOWNLOAD_ATTEMPTS = 3
 -- only files whose path contains this string (conf: restricted_path).
 local RESTRICTED_PATH = config.restricted_path or ""
 local SCRIPT_DIR = mp.get_script_directory() or "."
+-- Monotonic counter for temp names: os.time() alone collides when two
+-- downloads/extractions happen in the same second.
+local _tmp_seq = 0
+local function tmp_tag()
+  _tmp_seq = _tmp_seq + 1
+  return string.format("%d_%d", os.time(), _tmp_seq)
+end
 local rate_limit_until = nil
 -- Soft rate-limit retries (temporary 429 with remaining quota).
 local RATE_LIMIT_SOFT_WAIT = 30
@@ -378,13 +385,11 @@ local function http_get_json(url, opts)
         local res = run(cmd)
         if res.status ~= 0 or not res.stdout then
             mp.msg.warn("SubDL: curl failed with status " .. tostring(res.status))
-            backoff = math.min(backoff * 2, 10)
         else
             local body, code = res.stdout:match("^([%s%S]*)\n(%d%d%d)%s*$")
             local http_code = tonumber(code or 0)
             if http_code == 429 then
-                mp.msg.warn("HTTP 429: retrying (sync fallback, no blocking sleep)")
-                backoff = math.min(backoff * 2, 10)
+                mp.msg.warn("HTTP 429: retrying (sync fallback, backoff " .. backoff .. "s)")
             elseif http_code >= 200 and http_code < 300 then
                 local json = utils.parse_json(body or "")
                 if json then return json, http_code end
@@ -393,6 +398,13 @@ local function http_get_json(url, opts)
                 mp.msg.warn("SubDL: HTTP error " .. tostring(http_code) .. " for URL: " .. redact_url(url))
                 return nil, http_code
             end
+        end
+        -- Back off before the next attempt (429 / transport error). This is a
+        -- sync fallback, so a short bounded sleep is acceptable; cap at 10s so
+        -- a persistent 429 can't stall playback for long.
+        if _ < tries then
+            utils.subprocess({ args = { "sleep", tostring(backoff) }, cancellable = false })
+            backoff = math.min(backoff * 2, 10)
         end
     end
     return nil, 0
@@ -516,8 +528,33 @@ local function safe_find_subs(dir)
     return files
 end
 
+-- Zip-slip guard: an untrusted subtitle pack must not contain members that
+-- escape dest (../ or absolute paths). List members first and reject the pack
+-- if any escapes; otherwise extract. Returns the subprocess result or nil on
+-- a rejected/dangerous archive.
 local function safe_unzip(zip, dest)
-    return utils.subprocess({ args = {"unzip", "-o", zip, "-d", dest}, cancellable = false })
+    local list = utils.subprocess({
+        args = { "unzip", "-Z1", zip },
+        cancellable = false
+    })
+    if list.status ~= 0 or not list.stdout then
+        return utils.subprocess({ args = { "unzip", "-o", zip, "-d", dest }, cancellable = false })
+    end
+    for member in list.stdout:gmatch("[^\r\n]+") do
+        local m = member:gsub("\\", "/")
+        if m:match("^/") or m:match("^%a:") then
+            mp.msg.warn("ar_subs: rejecting subtitle zip with absolute member: " .. member)
+            return nil
+        end
+        local parts = {}
+        for p in m:gmatch("[^/]+") do
+            if p == ".." then
+                mp.msg.warn("ar_subs: rejecting subtitle zip with '..' member: " .. member)
+                return nil
+            end
+        end
+    end
+    return utils.subprocess({ args = { "unzip", "-o", zip, "-d", dest }, cancellable = false })
 end
 
 -- SubDL downloads are ZIPs. The provider returns the original subtitle
@@ -1401,7 +1438,10 @@ local function process_download_content(tmp_dir, title, content_type, season, ep
             movie_files_map[title] = sub_file
         end
         downloaded_subs[video_name] = downloaded_subs[video_name] or {}
-        downloaded_subs[video_name][url] = sub_file
+        -- Store under the stripped download URL (query dropped) so it matches
+        -- the lookup key computed in download_and_load regardless of api_key
+        -- rotation.
+        downloaded_subs[video_name][url ~= nil and url:gsub("%?.*$", "") or tostring(sub_file)] = sub_file
         return sub_file
     end
     return nil
@@ -1410,8 +1450,23 @@ end
 local function download_and_load(sub, video_name, season, episode, valid_episodes, valid_pairs, on_done)
     downloaded_subs[video_name] = downloaded_subs[video_name] or {}
 
-    local cache_key = subdl_provider.api_download_url(sub)
-                       or (sub and (sub.url or sub.download_url))
+    -- Resolve the media identity ONCE at call time, not when the async
+    -- download completes. If the user switches files mid-download, re-reading
+    -- mp.get_property("path") in the completion callback would resolve the NEW
+    -- file's title and misdirect the subtitle into the wrong show's folder.
+    local dl_path = mp.get_property("path")
+    local dl_media = resolve_media_info(dl_path, video_name)
+    local dl_content_type = dl_media.content_type
+    if dl_content_type ~= "anime" and dl_content_type ~= "tv" and dl_content_type ~= "movie" then
+        dl_content_type = dl_media.episode and "tv" or "movie"
+    end
+    local dl_title = dl_media.title or video_name or "unknown"
+
+    -- Stable identity: stripped absolute URL (query-string removed) so api_key
+    -- rotation doesn't defeat the already-downloaded cache. Matches the key
+    -- process_download_content stores under.
+    local cache_url = subdl_provider.api_download_url(sub)
+    local cache_key = cache_url and cache_url:gsub("%?.*$", "") or nil
     if cache_key and downloaded_subs[video_name][cache_key] then
         mp.osd_message("Subtitle loaded", 2)
         mp.commandv("sub-add", zstd_mod.ensure(downloaded_subs[video_name][cache_key]))
@@ -1419,31 +1474,59 @@ local function download_and_load(sub, video_name, season, episode, valid_episode
         return downloaded_subs[video_name][cache_key]
     end
 
+    -- Re-fetch with the current (possibly switched) download key. Defined as
+    -- a closure so the 429 soft-retry can re-run the whole ensure/download
+    -- cycle after handle_download_429 switches to the backup key.
+    local function do_download()
+        subdl_provider.ensure_download_key(function(key, quota, source)
+            if not key or key == "" then
+                if quota then
+                    apply_download_quota_block({ usage = { downloads = {
+                        used = quota.used, limit = quota.limit, remaining = 0,
+                        reset_at = quota.reset_at, period = quota.period,
+                    }}})
+                else
+                    mp.osd_message("SubDL download quota exhausted on all keys.", 6)
+                end
+                if on_done then on_done(nil) end
+                return
+            end
+            mp.msg.info(string.format(
+                "SubDL: using %s key for single download (%s remaining)",
+                source or "unknown",
+                quota and tostring(quota.remaining) or "?"))
+            subdl_provider.download_async(sub, function(body, code, dl_url, original_name)
+                handle_download(body, code, dl_url, original_name)
+            end)
+        end)
+    end
+
+    local retries = 0
     local function handle_download(body, code, dl_url, original_name)
         if code == 429 then
             mp.msg.warn("SubDL: HTTP 429 rate limited in single download")
-            handle_download_429(RATE_LIMIT_SOFT_MAX_RETRIES, nil, function()
+            handle_download_429(retries, function(wait)
+                retries = retries + 1
+                mp.add_timeout(wait + 1, do_download)
+            end, function()
                 if on_done then on_done(nil) end
             end)
             return nil
         end
 
         if not body or body == "" or not dl_url then
-            mp.msg.warn("ar_subs: empty download body for url=" .. tostring(dl_url)
+            mp.msg.warn("ar_subs: empty download body for url=" .. redact_url(tostring(dl_url))
                         .. " http_code=" .. tostring(code))
             if on_done then on_done(nil) end
             return nil
         end
 
-        local path = mp.get_property("path")
-        local media = resolve_media_info(path, video_name)
-        local content_type = media.content_type
-        if content_type ~= "anime" and content_type ~= "tv" and content_type ~= "movie" then
-            content_type = media.episode and "tv" or "movie"
-        end
-        local title = media.title or video_name or "unknown"
+        -- Use the media identity captured when the download was triggered, so
+        -- a mid-flight file switch can't misdirect this subtitle.
+        local content_type = dl_content_type
+        local title = dl_title
 
-        local tmp = "/tmp/subdl_extract_" .. os.time()
+        local tmp = "/tmp/subdl_extract_" .. tmp_tag()
         safe_mkdir(tmp)
         local out = tmp .. "/" .. downloaded_subtitle_name(title, original_name)
         local f = io.open(out, "w")
@@ -1463,27 +1546,7 @@ local function download_and_load(sub, video_name, season, episode, valid_episode
     end
 
     -- Resolve a key with remaining download quota, then fetch once.
-    subdl_provider.ensure_download_key(function(key, quota, source)
-        if not key or key == "" then
-            if quota then
-                apply_download_quota_block({ usage = { downloads = {
-                    used = quota.used, limit = quota.limit, remaining = 0,
-                    reset_at = quota.reset_at, period = quota.period,
-                }}})
-            else
-                mp.osd_message("SubDL download quota exhausted on all keys.", 6)
-            end
-            if on_done then on_done(nil) end
-            return
-        end
-        mp.msg.info(string.format(
-            "SubDL: using %s key for single download (%s remaining)",
-            source or "unknown",
-            quota and tostring(quota.remaining) or "?"))
-        subdl_provider.download_async(sub, function(body, code, dl_url, original_name)
-            handle_download(body, code, dl_url, original_name)
-        end)
-    end)
+    do_download()
     return nil
 end
 
@@ -1496,15 +1559,22 @@ local function fetch_bulk_subs(subs_batch, video_name, season, episode, valid_ep
     end
     local title = media.title or video_name or "unknown"
 
-    local tmp_base = "/tmp/subdl_batch_" .. os.time()
+    local tmp_base = "/tmp/subdl_batch_" .. tmp_tag()
     safe_mkdir(tmp_base)
 
     mp.msg.info(string.format("SubDL: downloading %d subtitles async...", #subs_batch))
 
+    -- Distinguish a transient transport failure (empty body / HTTP error,
+    -- retryable, do NOT burn the candidate) from a successful download that
+    -- simply didn't match the episode (advance the index). Without this the
+    -- caller would misclassify a flaky download as "no match" and permanently
+    -- drop the candidate.
+    local transient_failed = false
+
     local function process_item(i)
         if i > #subs_batch then
             safe_rm_rf(tmp_base)
-            if on_done then on_done(nil) end
+            if on_done then on_done(nil, false, transient_failed) end
             return
         end
 
@@ -1542,6 +1612,7 @@ local function fetch_bulk_subs(subs_batch, video_name, season, episode, valid_ep
                     end
                 end
             else
+                transient_failed = true
                 mp.msg.warn("ar_subs: empty download body for batch item " .. i
                             .. " http_code=" .. tostring(code))
             end
@@ -1635,7 +1706,7 @@ local function fetch_next_sub(opts)
 
         local function start_download()
             osd_show(string.format("Downloading %d/%d...", start_idx, #subs_list))
-            fetch_bulk_subs(batch, video_name, season, episode, valid_episodes, valid_pairs, function(loaded, rate_limited)
+            fetch_bulk_subs(batch, video_name, season, episode, valid_episodes, valid_pairs, function(loaded, rate_limited, transient_failed)
                 osd_remove()
                 if loaded then
                     current_index[video_name] = end_idx
@@ -1649,6 +1720,19 @@ local function fetch_next_sub(opts)
                         -- Hard stop: do not advance index so a later manual
                         -- retry can re-try this candidate after quota resets.
                     end)
+                    return
+                end
+                if transient_failed then
+                    -- Transport failure (empty body / HTTP error), NOT a genuine
+                    -- "no match": retry the same candidate without advancing the
+                    -- index or burning quota on a fresh download. Bound it so a
+                    -- persistently failing candidate can't loop forever.
+                    mp.msg.warn("SubDL: transient download failure, retrying candidate")
+                    if attempt >= max_attempts then
+                        mp.osd_message("Download failed (transient) — try again", 3)
+                        return
+                    end
+                    mp.add_timeout(1, function() try_batch(attempt + 1) end)
                     return
                 end
                 -- Candidate downloaded but didn't match episode/title — advance

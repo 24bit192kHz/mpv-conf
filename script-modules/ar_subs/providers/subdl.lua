@@ -31,6 +31,15 @@
 
 local match_util = require "ar_subs.util.match"
 
+-- Monotonic counter for temp-file names. os.time()+math.random collides when
+-- two downloads land in the same second (math.random is unseeded, so the
+-- first call is deterministic). A per-process counter is unique regardless.
+local _tmp_seq = 0
+local function tmp_tag()
+  _tmp_seq = _tmp_seq + 1
+  return string.format("%d_%d", os.time(), _tmp_seq)
+end
+
 local M = {}
 
 -- Default configuration. configure() merges caller-supplied keys over these.
@@ -391,6 +400,23 @@ function M.parse_reset_at(reset_at)
   })
 end
 
+-- Zip-slip guard: reject archives whose members escape the extraction dir
+-- (absolute paths or '..' segments). Returns true if the archive is safe.
+local function zip_members_safe(path)
+  local u = get_utils()
+  if not u then return true end
+  local res = u.subprocess({ args = { "unzip", "-Z1", path }, cancellable = false })
+  if res.status ~= 0 or not res.stdout then return true end
+  for member in res.stdout:gmatch("[^\r\n]+") do
+    local m = member:gsub("\\", "/")
+    if m:match("^/") or m:match("^%a:") then return false end
+    for p in m:gmatch("[^/]+") do
+      if p == ".." then return false end
+    end
+  end
+  return true
+end
+
 -- SubDL occasionally answers HTTP 200 with a non-zip body (a transient error
 -- page, or a key it rejects). A real subtitle zip starts with the PK magic;
 -- checking it lets us detect that case and retry instead of feeding garbage
@@ -424,8 +450,8 @@ end
 local function download_url_to_srt(url, fallback_name)
   if not url then return nil, 0, nil end
 
-  local tmp_zip = "/tmp/subdl_dl_" .. os.time() .. "_" .. math.random(10000) .. ".zip"
-  local tmp_dir = "/tmp/subdl_dl_" .. os.time() .. "_" .. math.random(10000)
+  local tmp_zip = "/tmp/subdl_dl_" .. tmp_tag() .. ".zip"
+  local tmp_dir = "/tmp/subdl_dl_" .. tmp_tag()
   local u = get_utils()
   if not u then return nil, 0, url end
 
@@ -462,6 +488,11 @@ local function download_url_to_srt(url, fallback_name)
     return srt_content, code, url, original_filename
   end
 
+  if not zip_members_safe(tmp_zip) then
+    log("warn", "SubDL: rejecting zip with unsafe members (zip-slip)")
+    os.remove(tmp_zip)
+    return srt_content, 0, url, nil
+  end
   u.subprocess({ args = {"mkdir", "-p", tmp_dir}, cancellable = false })
   u.subprocess({ args = {"unzip", "-o", tmp_zip, "-d", tmp_dir}, cancellable = false })
 
@@ -625,6 +656,12 @@ function M.download_async(sub, on_done)
 
       if is_zip_file(tmp_zip) then
         -- ZIP archive: unzip and take the first subtitle inside.
+        if not zip_members_safe(tmp_zip) then
+          log("warn", "SubDL: rejecting zip with unsafe members (zip-slip)")
+          os.remove(tmp_zip)
+          if on_done then on_done(nil, code, url, nil) end
+          return
+        end
         u.subprocess({ args = {"mkdir", "-p", tmp_dir}, cancellable = false })
         u.subprocess({ args = {"unzip", "-o", tmp_zip, "-d", tmp_dir}, cancellable = false })
         local find_res = u.subprocess({
