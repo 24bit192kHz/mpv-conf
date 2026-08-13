@@ -528,6 +528,45 @@ local function safe_find_subs(dir)
     return files
 end
 
+-- Placeholder detection: SubDL / subtitle-api entries sometimes resolve to an
+-- off-site download stub (prose with Mediafire/Mega links telling the user to
+-- grab the real subtitle from a browser) instead of actual subtitle data. mpv
+-- cannot demux these, so sub-add errors with "Can not open external file".
+-- Detect by content before persisting or loading so a stub never reaches the
+-- player. Real subtitle formats carry timing structure, so require: no timing
+-- markers, several instruction/link markers, and a small size.
+local PLACEHOLDER_MARKERS = {
+    "to download the original",
+    "address bar of your browser",
+    "file size:",
+    "mediafire",
+    "mega%.nz",
+    "my greetings",
+}
+local function has_subtitle_timing(data)
+    if not data or #data == 0 then return false end
+    if data:find("^WEBVTT", 1, true) then return true end            -- WebVTT
+    if data:find("%[Events%]", 1, true) then return true end         -- ASS/SSA
+    if data:match("%d+:%d+:[%d.,]+%s*-->%s*%d+:%d+:[%d.,]+") then return true end -- SRT cue
+    return data:match("%d+:%d+:%d+[%.,]%d+") ~= nil                    -- any timestamped line
+end
+local function is_placeholder_content(data)
+    if not data or #data == 0 then return false end
+    if has_subtitle_timing(data) then return false end
+    local low = data:lower()
+    local hits = 0
+    for _, marker in ipairs(PLACEHOLDER_MARKERS) do
+        if low:find(marker) then hits = hits + 1 end
+    end
+    return hits >= 2 and #data < 8192
+end
+local function is_placeholder_file(path)
+    local f = io.open(path, "rb")
+    if not f then return false end
+    local data = f:read("*a"); f:close()
+    return is_placeholder_content(data)
+end
+
 -- Zip-slip guard: an untrusted subtitle pack must not contain members that
 -- escape dest (../ or absolute paths). List members first and reject the pack
 -- if any escapes; otherwise extract. Returns the subprocess result or nil on
@@ -1395,7 +1434,10 @@ local function process_download_content(tmp_dir, title, content_type, season, ep
 
     for _, f in ipairs(files) do
         local base = f:match("([^/]+)$")
-        if matches_title_words(base, title) then
+        if is_placeholder_file(f) then
+            mp.msg.warn(string.format("SubDL: skipping placeholder '%s' (off-site link stub, not subtitle content)", base))
+            os.remove(f)
+        elseif matches_title_words(base, title) then
             local dest = show_dir .. "/" .. sanitize_filename(base)
             if utils.file_info(f) and not utils.file_info(dest)
                and not utils.file_info(dest .. ".zst") then
@@ -1723,16 +1765,17 @@ local function fetch_next_sub(opts)
                     return
                 end
                 if transient_failed then
-                    -- Transport failure (empty body / HTTP error), NOT a genuine
-                    -- "no match": retry the same candidate without advancing the
-                    -- index or burning quota on a fresh download. Bound it so a
-                    -- persistently failing candidate can't loop forever.
-                    mp.msg.warn("SubDL: transient download failure, retrying candidate")
-                    if attempt >= max_attempts then
-                        mp.osd_message("Download failed (transient) — try again", 3)
-                        return
+                    -- Transport failure or dead link (empty body / HTTP error):
+                    -- advance index so we move to the next candidate rather than
+                    -- burning API quota retrying the same dead link repeatedly.
+                    current_index[video_name] = end_idx
+                    mp.msg.warn("SubDL: empty download or transport failure on candidate, advancing to next")
+                    if attempt < max_attempts then
+                        mp.osd_message("Download empty/failed, trying next...", 1)
+                        mp.add_timeout(0.5, function() try_batch(attempt + 1) end)
+                    else
+                        mp.osd_message("Download failed — press Ctrl+Shift+V to try next candidate", 3)
                     end
-                    mp.add_timeout(1, function() try_batch(attempt + 1) end)
                     return
                 end
                 -- Candidate downloaded but didn't match episode/title — advance
@@ -1914,8 +1957,16 @@ local function check_existing_season_files(show_title, season, episode)
                 cached_seasons[season][episode] = nil
                 return false
             end
+            local loadable = zstd_mod.ensure(target_file)
+            if is_placeholder_file(loadable) then
+                mp.msg.warn(string.format(
+                    "SubDL: dropping cached placeholder for %s S%02dE%02d: %s",
+                    show_title, season, episode, target_file))
+                cached_seasons[season][episode] = nil
+                return false
+            end
             mp.msg.info(string.format("Found cached %s S%02dE%02d: %s", show_title, season, episode, target_file))
-            mp.commandv("sub-add", zstd_mod.ensure(target_file))
+            mp.commandv("sub-add", loadable)
             return true
         end
     end
@@ -1929,8 +1980,14 @@ local function check_existing_subtitle_for_file(video_filename)
     local function try_key(key)
         local target_file = key and movie_files_map[key]
         if target_file and utils.file_info(target_file) then
+            local loadable = zstd_mod.ensure(target_file)
+            if is_placeholder_file(loadable) then
+                mp.msg.warn(string.format("SubDL: dropping cached placeholder for '%s': %s", key, target_file))
+                movie_files_map[key] = nil
+                return false
+            end
             mp.msg.info(string.format("Found cached subtitle for '%s': %s", key, target_file))
-            mp.commandv("sub-add", zstd_mod.ensure(target_file))
+            mp.commandv("sub-add", loadable)
             return true
         end
         return false
@@ -1961,6 +2018,15 @@ local function load_api_candidate(media, video_name, subscene_id)
         filename = video_name,
     }, subscene_id)
     if not tmp then return nil end
+
+    -- A candidate can resolve to an off-site link stub instead of subtitle
+    -- data; refuse to persist it so the cache never holds a placeholder (and
+    -- the caller can step down to the next candidate).
+    if is_placeholder_file(tmp) then
+        mp.msg.warn(string.format("subtitle-api: skipping placeholder candidate (subscene_id=%s)", tostring(subscene_id)))
+        os.remove(tmp)
+        return nil
+    end
 
     local meta = subtitle_api.last_meta() or {}
     local ctype = media.content_type
@@ -2452,7 +2518,7 @@ load_media_catalog()
 mp.register_event("file-loaded", enhanced_auto_fetch_if_needed)
 mp.register_event("end-file", abort_inflight)
 mp.register_event("shutdown", function() cache_mod.force_save() end)
-mp.add_key_binding("Ctrl+Shift+V", "ar_subs_next", function()
+local function ar_subs_next_handler()
     -- Step through the local top-N candidates first; when exhausted, fall
     -- through to the SubDL "next candidate" path.
     if is_enabled() then
@@ -2470,10 +2536,15 @@ mp.add_key_binding("Ctrl+Shift+V", "ar_subs_next", function()
         end
     end
     fetch_next_sub({ auto = false })
-end)
-mp.add_key_binding("Ctrl+V", "ar_subs_toggle_deep", toggle_deep_search)
-mp.add_key_binding("Alt+V", "ar_subs_search", manual_search)
+end
+
+mp.add_key_binding("Ctrl+Shift+V", "ar_subs_next", ar_subs_next_handler)
+mp.add_key_binding("Ctrl+Shift+v", "ar_subs_next_v", ar_subs_next_handler)
+mp.add_key_binding("Ctrl+v", "ar_subs_toggle_deep", toggle_deep_search)
+mp.add_key_binding("Alt+v", "ar_subs_search", manual_search)
+mp.add_key_binding("Alt+V", "ar_subs_search_cap", manual_search)
 mp.add_key_binding("Ctrl+Alt+v", "ar_subs_pick", ar_subs_pick)
+mp.add_key_binding("Ctrl+Alt+V", "ar_subs_pick_cap", ar_subs_pick)
 mp.register_script_message("ar_subs_search", handle_manual_search)
 mp.register_script_message("ar_subs_download_item", function(index)
     index = tonumber(index) -- script-message args arrive as strings
