@@ -295,6 +295,29 @@ stop_runtime_scans = function()
     release_startup_pause()
 end
 
+local saved_hwdec_for_legacy = nil
+
+local function hwdec_is_cpu_readable(h)
+    return h == "no" or (type(h) == "string" and h:find("-copy", 1, true) ~= nil)
+end
+
+local function enable_copy_hwdec()
+    local cur = mp.get_property("hwdec") or ""
+    if hwdec_is_cpu_readable(cur) then return end
+    saved_hwdec_for_legacy = cur
+    local copy = (cur == "nvdec" or cur:find("nvdec", 1, true)) and "nvdec-copy" or "auto-copy"
+    mp.set_property("hwdec", copy)
+    mp.msg.warn(string.format("dynamic_crop: hwdec %s -> %s for cropdetect", cur, copy))
+end
+
+local function restore_hwdec()
+    if saved_hwdec_for_legacy then
+        mp.set_property("hwdec", saved_hwdec_for_legacy)
+        mp.msg.info("dynamic_crop: restored hwdec " .. saved_hwdec_for_legacy)
+        saved_hwdec_for_legacy = nil
+    end
+end
+
 local function start_legacy_backend(reason)
     if legacy_started then return end
     legacy_started = true
@@ -302,6 +325,7 @@ local function start_legacy_backend(reason)
     running = false
     stop_cuda_timers()
     remove_crop()
+    enable_copy_hwdec()
 
     local legacy = mp.command_native({"expand-path", opts.legacy_script})
     local info = utils.file_info(legacy)
@@ -1220,6 +1244,13 @@ mp.register_event("file-loaded", function()
     source_width = nil
     source_height = nil
     scan_failures = 0
+    -- Previous file may have fallen back to cropdetect; try CUDA again if
+    -- the analyzer is still on disk. Restore nvdec so the new file is not
+    -- stuck on *-copy from the last fallback.
+    if cuda_binary_available() and runtime_mode ~= "disabled" and opts.backend ~= "legacy" then
+        restore_hwdec()
+        opts.enabled = true
+    end
     publish_uosc_button()
     telemetry(string.format(
         "loaded version=%s mode=%s apply_mode=%s key=%s head_guard=%.3f min_lead=%.3f tail_guard=%.3f transient_revert=%.3f scan_interval=%.3f",
@@ -1258,6 +1289,7 @@ mp.register_event("end-file", function()
         timer = nil
     end
     remove_crop()
+    restore_hwdec()
 end)
 
 mp.add_key_binding(opts.cycle_key ~= "" and opts.cycle_key or nil, "cycle-mode", cycle_runtime_mode)

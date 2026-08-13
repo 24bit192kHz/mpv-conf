@@ -865,7 +865,14 @@ local function install_bindings()
             -- Add modifier variants only for simple alphanumeric targets.
             -- This avoids dubious combos for punctuation and keeps the count sane.
             if opts.modifiers and target:match("^[%a%d]$") then
-                for _, mod in ipairs({"ctrl", "alt", "ctrl+shift", "alt+shift", "ctrl+alt"}) do
+                -- ctrl/alt for every letter. ctrl+shift / ctrl+alt only for `v`
+                -- (ar_subs Ctrl+Shift+V / Ctrl+Alt+V). Binding ctrl+shift+every
+                -- letter steals OS layout-switch chords and unrelated shortcuts.
+                local mods = { "ctrl", "alt" }
+                if target:lower() == "v" then
+                    mods = { "ctrl", "alt", "ctrl+shift", "alt+shift", "ctrl+alt" }
+                end
+                for _, mod in ipairs(mods) do
                     mp.add_forced_key_binding(mod .. "+" .. source, nil, function()
                         mp.commandv("keypress", mod .. "+" .. target)
                     end, { repeatable = false })
