@@ -61,9 +61,10 @@ local function parse_curl_output(stdout)
     return nil, 0, {}
   end
 
-  -- Split into lines (filter out empty trailing match from gmatch)
+  -- Keep empty lines: gmatch("[^\n]+") drops the blank separator, so a
+  -- Unix \n\n header/body split never fires and JSON parse sees HTTP/1.1.
   local lines = {}
-  for line in stdout:gmatch("[^\n]+") do
+  for line in (stdout .. "\n"):gmatch("(.-)\n") do
     lines[#lines + 1] = line
   end
   if #lines == 0 then return nil, 0, {} end
@@ -74,20 +75,21 @@ local function parse_curl_output(stdout)
 
   -- Look for a blank line that separates HTTP headers from body (curl -D -).
   -- If the first line looks like "HTTP/1.1 200 OK" we're in header mode.
-  local first_line = lines[1] or ""
+  local first_line = (lines[1] or ""):gsub("\r$", "")
   local has_headers = first_line:match("^HTTP/%S+") ~= nil
 
   if has_headers then
     for i, line in ipairs(lines) do
-      if line:match("^%s*$") or line == "\r" then
+      local trimmed = line:gsub("\r$", "")
+      if trimmed:match("^%s*$") then
         header_end = i + 1
         break
       end
-      local key, value = line:match("^([^:]+):%s*(.-)%s*$")
+      local key, value = trimmed:match("^([^:]+):%s*(.-)%s*$")
       if key then
         headers[key:lower()] = value
       end
-      local code = line:match("^HTTP/%S+ (%d+)")
+      local code = trimmed:match("^HTTP/%S+ (%d+)")
       if code then http_code = tonumber(code) end
     end
   end

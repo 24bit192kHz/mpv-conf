@@ -461,6 +461,29 @@ do
   end
 end
 
+-- Unix LF header/body split (curl -D - without CRLF) must still parse JSON.
+do
+  H.reset()
+  async_calls = {}
+  pending_callbacks = {}
+  stubs_mp._async_result = {
+    status = 0,
+    stdout = "HTTP/1.1 200 OK\nX-RateLimit-Remaining: 7\n\n{\"status\":true,\"ok\":1}\n",
+    stderr = "",
+  }
+  local captured
+  http.request_async("https://api.test.com", { api_key = "KEY" }, function(_, result)
+    captured = result
+  end)
+  flush_callbacks()
+  H.eq("lf-split http_code", captured.http_code, 200)
+  H.eq("lf-split remaining", captured.remaining, "7")
+  local json = require("mp.utils").parse_json(captured.body or "")
+  -- stubs.utils.parse_json may be limited; at least the body must not start with HTTP/
+  H.ok("lf-split body is not headers", (captured.body or ""):sub(1, 4) ~= "HTTP")
+  H.ok("lf-split body has json", (captured.body or ""):find("{", 1, true) ~= nil)
+end
+
 -- ---------------------------------------------------------------------------
 -- Restore original package.loaded so other spec files aren't affected.
 -- ---------------------------------------------------------------------------

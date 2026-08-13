@@ -301,12 +301,24 @@ local function osd_remove()
 end
 
 local current_async_handle = nil
+local inflight_handles = {}
+
+local function track_handle(h)
+    if h then inflight_handles[h] = true end
+    current_async_handle = h
+    return h
+end
 
 local function abort_inflight()
-    if current_async_handle then
-        mp.abort_async_command(current_async_handle)
-        current_async_handle = nil
+    for h in pairs(inflight_handles) do
+        pcall(function() mp.abort_async_command(h) end)
     end
+    inflight_handles = {}
+    current_async_handle = nil
+end
+
+local function still_same_path(expected)
+    return expected ~= nil and expected ~= "" and mp.get_property("path") == expected
 end
 
 local function http_get_json_async(url, opts, on_done)
@@ -314,7 +326,7 @@ local function http_get_json_async(url, opts, on_done)
     local headers = opts.headers or {}
     local api_key = opts.api_key or SUBDL_API_KEY
     local backup_key = opts.backup_key or SUBDL_API_BACKUP_KEY
-    current_async_handle = http_mod.request_async(url, {
+    current_async_handle = track_handle(http_mod.request_async(url, {
         api_key = api_key,
         backup_key = backup_key,
         headers = headers,
@@ -340,7 +352,7 @@ local function http_get_raw_async(url, opts, on_done)
     local headers = opts.headers or {}
     local api_key = opts.api_key or SUBDL_API_KEY
     local backup_key = opts.backup_key or SUBDL_API_BACKUP_KEY
-    current_async_handle = http_mod.request_async(url, {
+    current_async_handle = track_handle(http_mod.request_async(url, {
         api_key = api_key,
         backup_key = backup_key,
         headers = headers,
@@ -577,7 +589,8 @@ local function safe_unzip(zip, dest)
         cancellable = false
     })
     if list.status ~= 0 or not list.stdout then
-        return utils.subprocess({ args = { "unzip", "-o", zip, "-d", dest }, cancellable = false })
+        mp.msg.warn("ar_subs: unzip -Z1 failed, refusing archive (fail closed)")
+        return nil
     end
     for member in list.stdout:gmatch("[^\r\n]+") do
         local m = member:gsub("\\", "/")
@@ -1511,7 +1524,8 @@ local function download_and_load(sub, video_name, season, episode, valid_episode
     local cache_key = cache_url and cache_url:gsub("%?.*$", "") or nil
     if cache_key and downloaded_subs[video_name][cache_key] then
         mp.osd_message("Subtitle loaded", 2)
-        mp.commandv("sub-add", zstd_mod.ensure(downloaded_subs[video_name][cache_key]))
+        local cached = zstd_mod.ensure(downloaded_subs[video_name][cache_key])
+        if cached then mp.commandv("sub-add", cached) end
         if on_done then on_done(downloaded_subs[video_name][cache_key]) end
         return downloaded_subs[video_name][cache_key]
     end
@@ -1537,9 +1551,10 @@ local function download_and_load(sub, video_name, season, episode, valid_episode
                 "SubDL: using %s key for single download (%s remaining)",
                 source or "unknown",
                 quota and tostring(quota.remaining) or "?"))
-            subdl_provider.download_async(sub, function(body, code, dl_url, original_name)
+            local h = subdl_provider.download_async(sub, function(body, code, dl_url, original_name)
                 handle_download(body, code, dl_url, original_name)
             end)
+            track_handle(h)
         end)
     end
 
@@ -1579,9 +1594,12 @@ local function download_and_load(sub, video_name, season, episode, valid_episode
         local sub_file = process_download_content(tmp, title, content_type, season, episode, valid_episodes, valid_pairs, video_name, dl_url)
         safe_rm_rf(tmp)
         if sub_file then
-            local video_path = mp.get_property("path")
-            activation_util.activate(mp, sub_file, video_path, CACHE_TO_MEDIA_DIR)
-            mp.msg.info("SubDL: loaded subtitle", sub_file)
+            if not still_same_path(dl_path) then
+                mp.msg.info("SubDL: discarding download, file changed")
+            else
+                activation_util.activate(mp, sub_file, dl_path, CACHE_TO_MEDIA_DIR)
+                mp.msg.info("SubDL: loaded subtitle", sub_file)
+            end
         end
         if on_done then on_done(sub_file) end
         return sub_file
@@ -1628,6 +1646,12 @@ local function fetch_bulk_subs(subs_batch, video_name, season, episode, valid_ep
         end
 
         subdl_provider.download_async(sub, function(body, code, dl_url, original_name)
+            if not still_same_path(path) then
+                mp.msg.info("SubDL: aborting batch item, file changed")
+                safe_rm_rf(tmp_base)
+                if on_done then on_done(nil) end
+                return
+            end
             if code == 429 then
                 mp.msg.warn("SubDL: HTTP 429 rate limited, stopping batch")
                 safe_rm_rf(tmp_base)
@@ -1646,9 +1670,12 @@ local function fetch_bulk_subs(subs_batch, video_name, season, episode, valid_ep
                     local loaded = process_download_content(extract_dir, title, content_type, season, episode, valid_episodes, valid_pairs, video_name, dl_url)
                     if loaded then
                         safe_rm_rf(tmp_base)
-                        local video_path = mp.get_property("path")
-                        activation_util.activate(mp, loaded, video_path, CACHE_TO_MEDIA_DIR)
-                        mp.msg.info("SubDL: loaded subtitle", loaded)
+                        if not still_same_path(path) then
+                            mp.msg.info("SubDL: discarding batch download, file changed")
+                        else
+                            activation_util.activate(mp, loaded, path, CACHE_TO_MEDIA_DIR)
+                            mp.msg.info("SubDL: loaded subtitle", loaded)
+                        end
                         if on_done then on_done(loaded) end
                         return
                     end
@@ -1839,28 +1866,37 @@ end
 -- as "this episode already has its subtitle" so we don't fetch a duplicate.
 local SIBLING_SUB_EXTS = { srt = true, ass = true, ssa = true, sub = true, vtt = true }
 
+local function looks_arabic(fn, lang)
+    lang = (lang or ""):lower()
+    if lang == "ar" or lang == "ara" or lang:sub(1, 3) == "ar-" then return true end
+    local low = (fn or ""):lower()
+    return low:find("ara", 1, true) ~= nil or low:find("arabic", 1, true) ~= nil
+        or low:find("عربي", 1, true) ~= nil
+end
+
 local function has_sibling_sub()
     local path = mp.get_property("path")
     if not path then return false end
     local stem = (basename(path):match("(.+)%.%w+$") or ""):lower()
     if stem == "" then return false end
-    -- Track-list check (a matching external sub already loaded).
+    -- Track-list check (a matching external Arabic sub already loaded).
     for _, t in ipairs(mp.get_property_native("track-list") or {}) do
         if t.type == "sub" and t.external then
             local fn = t["external-filename"] or ""
             local sub_stem = (basename(fn):match("(.+)%.%w+$") or ""):lower()
-            if sub_stem ~= "" and sub_stem == stem then return true end
+            if sub_stem ~= "" and sub_stem == stem and looks_arabic(fn, t.lang) then
+                return true
+            end
         end
     end
-    -- Filesystem check: a same-stem subtitle file next to the video. This does
-    -- not depend on autoload having populated the track list yet, so it fires
-    -- reliably on first load.
+    -- Filesystem: same-stem Arabic sidecar. An English video.srt must not
+    -- block the Arabic fetch waterfall.
     local dir = path:match("^(.*)/[^/]*$")
     if dir then
         for _, fn in ipairs(utils.readdir(dir, "files") or {}) do
             local fstem, fext = fn:match("(.+)%.([%w]+)$")
             if fstem and fext and SIBLING_SUB_EXTS[fext:lower()]
-                and fstem:lower() == stem then
+                and fstem:lower() == stem and looks_arabic(fn, nil) then
                 return true
             end
         end
@@ -1919,11 +1955,19 @@ local function scan_local_files_for_episode(show_title, season, episode, content
     end
 
     if best_match then
+        local loadable = zstd_mod.ensure(best_match)
+        if not loadable or is_placeholder_file(loadable) then
+            mp.msg.warn("SubDL: skipping local placeholder " .. tostring(best_match))
+            os.remove(best_match)
+            if loadable and loadable ~= best_match then os.remove(loadable) end
+            return nil
+        end
         season_files_map[show_title] = season_files_map[show_title] or {}
         season_files_map[show_title][season or 1] = season_files_map[show_title][season or 1] or {}
         season_files_map[show_title][season or 1][episode] = best_match
+        return best_match
     end
-    return best_match
+    return nil
 end
 
 local function check_existing_season_files(show_title, season, episode)
@@ -1958,11 +2002,13 @@ local function check_existing_season_files(show_title, season, episode)
                 return false
             end
             local loadable = zstd_mod.ensure(target_file)
-            if is_placeholder_file(loadable) then
+            if not loadable or is_placeholder_file(loadable) then
                 mp.msg.warn(string.format(
                     "SubDL: dropping cached placeholder for %s S%02dE%02d: %s",
                     show_title, season, episode, target_file))
                 cached_seasons[season][episode] = nil
+                os.remove(target_file)
+                if loadable and loadable ~= target_file then os.remove(loadable) end
                 return false
             end
             mp.msg.info(string.format("Found cached %s S%02dE%02d: %s", show_title, season, episode, target_file))
@@ -1981,9 +2027,11 @@ local function check_existing_subtitle_for_file(video_filename)
         local target_file = key and movie_files_map[key]
         if target_file and utils.file_info(target_file) then
             local loadable = zstd_mod.ensure(target_file)
-            if is_placeholder_file(loadable) then
+            if not loadable or is_placeholder_file(loadable) then
                 mp.msg.warn(string.format("SubDL: dropping cached placeholder for '%s': %s", key, target_file))
                 movie_files_map[key] = nil
+                os.remove(target_file)
+                if loadable and loadable ~= target_file then os.remove(loadable) end
                 return false
             end
             mp.msg.info(string.format("Found cached subtitle for '%s': %s", key, target_file))
@@ -2096,7 +2144,7 @@ local function subsource_movie_id(title, season, content_type)
             if score > best_score then best, best_score = r, score end
         end
     end
-    if best then
+    if best and best_score >= 4 then
         subsource_ids[tkey][want_season] = best.movieId
         return best.movieId
     end
@@ -2135,7 +2183,7 @@ local function try_subsource(media, video_name)
     for _, p in ipairs(ranked) do
         local zip = subsource_mod.download(p.subtitleId)
         if zip then
-            local tmp_dir = "/tmp/subsource_unpack_" .. tostring(p.subtitleId)
+            local tmp_dir = "/tmp/subsource_unpack_" .. tostring(p.subtitleId) .. "_" .. tmp_tag()
             safe_rm_rf(tmp_dir); safe_mkdir(tmp_dir)
             local uz = safe_unzip(zip, tmp_dir)
             os.remove(zip)
@@ -2193,11 +2241,11 @@ local function try_local_next(media, video_name)
     local cands = local_candidates[video_name]
     if not cands then return nil end
     local nxt = (local_idx[video_name] or 0) + 1
-    if not cands[nxt] then return nil end
-    local dest = load_api_candidate(media, video_name, cands[nxt].subscene_id)
-    if dest then
+    while cands[nxt] do
+        local dest = load_api_candidate(media, video_name, cands[nxt].subscene_id)
         local_idx[video_name] = nxt
-        return dest
+        if dest then return dest end
+        nxt = nxt + 1
     end
     return nil
 end
@@ -2226,11 +2274,19 @@ local function enhanced_auto_fetch_if_needed()
         local season = media.season or 1
         if check_existing_season_files(media.title, season, media.episode) then mp.osd_message("Loaded cached subtitle", 2); return end
         local local_file = scan_local_files_for_episode(media.title, season, media.episode, "anime")
-        if local_file then mp.commandv("sub-add", zstd_mod.ensure(local_file)); mp.osd_message("Loaded local subtitle", 2); return end
+        if local_file then
+            local loadable = zstd_mod.ensure(local_file)
+            if loadable then mp.commandv("sub-add", loadable) end
+            mp.osd_message("Loaded local subtitle", 2); return
+        end
     elseif media.content_type == "tv" and media.title and media.season and media.episode then
         if check_existing_season_files(media.title, media.season, media.episode) then mp.osd_message("Loaded cached subtitle", 2); return end
         local local_file = scan_local_files_for_episode(media.title, media.season, media.episode, "tv")
-        if local_file then mp.commandv("sub-add", zstd_mod.ensure(local_file)); mp.osd_message("Loaded local subtitle", 2); return end
+        if local_file then
+            local loadable = zstd_mod.ensure(local_file)
+            if loadable then mp.commandv("sub-add", loadable) end
+            mp.osd_message("Loaded local subtitle", 2); return
+        end
     end
     
     -- Offline Subscene index: zero-quota local hit before any API search.

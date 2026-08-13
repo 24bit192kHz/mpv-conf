@@ -95,6 +95,12 @@ local function script_ipc_socket()
     if opts.mpv_socket and opts.mpv_socket ~= "" then
         return opts.mpv_socket
     end
+    -- Reuse mpv.conf's input-ipc-server so hyprshaderd / remotes keep
+    -- /tmp/mpvsocket. Only invent a private socket when none exists.
+    local existing = mp.get_property("input-ipc-server", "")
+    if existing ~= "" then
+        return existing
+    end
     local pid = mp.get_property_number("pid", math.floor(mp.get_time() * 1000000))
     return string.format("/tmp/mpv-dynamic-crop-%d.sock", pid)
 end

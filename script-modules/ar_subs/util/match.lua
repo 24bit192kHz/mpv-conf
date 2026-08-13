@@ -315,7 +315,10 @@ function M.find_matching_episode_file(sub_files, season, episode, valid_episodes
       if num and num > 0 and num <= MAX_EPISODE then
         if not (filename_lower:find("[a-zA-Z]" .. num_str) or
                 filename_lower:find(num_str .. "[a-zA-Z]")) then
-          if num ~= 1080 and num ~= 720 and num ~= 480 and num ~= 2160 and num ~= 4 and num ~= 5 and num ~= 6 then
+          -- Drop resolutions only. Do not drop 4/5/6: "Show - 05.srt" is a
+          -- real episode tag. Channel layouts ("5.1") attach a letter/dot
+          -- and already fail the [a-zA-Z] adjacency check above.
+          if num ~= 1080 and num ~= 720 and num ~= 480 and num ~= 2160 then
             table.insert(ep_candidates, num)
           end
         end

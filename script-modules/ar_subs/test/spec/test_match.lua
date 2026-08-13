@@ -204,6 +204,14 @@ do
   H.eq("fmef no match returns nil", r, nil)
 end
 
+-- find_matching_episode_file: "Show - 05.srt" must match episode 5
+do
+  H.reset()
+  local r = match.find_matching_episode_file(
+    { "/p/Show - 05.srt", "/p/Show - 12.srt" }, 1, 5, nil, nil)
+  H.eq("fmef hyphen-padded episode 05", r, "/p/Show - 05.srt")
+end
+
 -- find_matching_episode_file: empty list returns nil
 do
   H.reset()

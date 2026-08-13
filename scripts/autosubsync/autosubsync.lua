@@ -256,7 +256,7 @@ local function load_show_transform()
     return t
 end
 
-local function save_show_transform(offset, scale, retimed_path)
+local function save_show_transform(offset, scale, retimed_path, src_path)
     if not config.cache_show_transform or type(offset) ~= "number" then return end
     -- A subtitle-derived framerate scale can be wildly wrong on sparse refs
     -- (e.g. 1.186 for Lain's signs sub). Only trust it inside a plausible
@@ -272,6 +272,7 @@ local function save_show_transform(offset, scale, retimed_path)
             offset = offset,
             scale = scale,
             retimed = retimed_path or false,
+            src = src_path or false,
         }))
         f:close()
     end
@@ -688,7 +689,7 @@ local function sync_subtitles(ref_sub_path, force_engine)
             -- ffsubsync logs its result to stderr, not stdout
             local offset, scale = parse_ffsubsync_transform(
                     (ret.stdout or "") .. "\n" .. (ret.stderr or ""))
-            if offset then save_show_transform(offset, scale, retimed_subtitle_path) end
+            if offset then save_show_transform(offset, scale, retimed_subtitle_path, subtitle_path) end
         end
         local old_sid = mp.get_property("sid")
         if mp.commandv("sub_add", retimed_subtitle_path) then
@@ -924,7 +925,10 @@ read_ref_manifest = function(dir)
     end
     if type(list) ~= "table" or #list == 0 then return nil, nil end
     for _, r in ipairs(list) do
-        if not utils.file_info(dir .. "/" .. r.file) then return nil, nil end
+        local p = dir .. "/" .. r.file
+        if not utils.file_info(p) and not utils.file_info(p .. ".zst") then
+            return nil, nil
+        end
     end
     return list, window
 end
@@ -1003,7 +1007,7 @@ get_embedded_refs = function(exclude_id, min_window)
     end
     list = list or extract_all_refs(dir, exclude_id, min_window)
     for _, r in ipairs(list) do
-        r.path = dir .. "/" .. r.file
+        r.path = plain_ref(dir .. "/" .. r.file)
     end
     return list
 end
@@ -1081,26 +1085,28 @@ prefetch_next = function()
     if pr == nil or pr.status ~= 0 then return end
     local data = utils.parse_json(pr.stdout or "")
     if type(data) ~= "table" or type(data.streams) ~= "table" then return end
-    -- Filenames use the per-type subtitle ordinal (1.ass, 2.srt, ...) --
-    -- the same scheme extract_all_refs uses via mpv's track.id, so the
-    -- manifest written on completion is honored by the next play.
+    -- Filenames use mpv subtitle track.id (1-based among ALL sub streams,
+    -- including PGS/image). Prefetch must count those too so the manifest
+    -- matches extract_all_refs on the next play.
     local args = { "nice", "-n", "19", config.ffmpeg_path, "-hide_banner", "-nostdin",
         "-y", "-loglevel", "quiet", "-analyzeduration", "100000", "-probesize", "5000000",
         "-an", "-vn", "-i", nxt }
-    local picks, seq = {}, 0
+    local picks, sub_id = {}, 0
     for _, s in ipairs(data.streams) do
-        local ext = REF_EXT[s.codec_name]
-        if s.codec_type == "subtitle" and ext then
-            seq = seq + 1
-            local file = seq .. "." .. ext
-            table.insert(args, "-map"); table.insert(args, "0:" .. s.index)
-            table.insert(args, "-f"); table.insert(args, ext)
-            table.insert(args, dir .. "/" .. file)
-            table.insert(picks, { file = file, id = seq,
-                lang = s.tags and s.tags.language, codec = s.codec_name })
+        if s.codec_type == "subtitle" then
+            sub_id = sub_id + 1
+            local ext = REF_EXT[s.codec_name]
+            if ext then
+                local file = sub_id .. "." .. ext
+                table.insert(args, "-map"); table.insert(args, "0:" .. s.index)
+                table.insert(args, "-f"); table.insert(args, ext)
+                table.insert(args, dir .. "/" .. file)
+                table.insert(picks, { file = file, id = sub_id,
+                    lang = s.tags and s.tags.language, codec = s.codec_name })
+            end
         end
     end
-    if seq == 0 then return end
+    if #picks == 0 then return end
     subprocess({ "mkdir", "-p", dir })
     mp.msg.info("autosubsync: prefetching refs for next episode: " .. nxt)
     mp.command_native_async({
@@ -1308,8 +1314,15 @@ end
 -- left this guard permanently dead).
 local just_applied_cache = false
 
--- Apply the cached show transform to the active external subtitle. Returns true
--- if a retimed sub was produced and loaded.
+-- Apply the cached per-episode transform to the active external subtitle.
+-- Returns true if a retimed sub was produced and loaded. Refuses to apply
+-- when the active file is not the same source that produced the cache
+-- (Ctrl+Shift+V next-candidate would otherwise inherit a wrong offset).
+local function sub_identity(path)
+    path = (path or ""):gsub("%.zst$", "")
+    return path:match("([^/]+)$") or path
+end
+
 local function apply_cached_transform()
     local t = load_show_transform()
     if not t then return false end
@@ -1317,6 +1330,12 @@ local function apply_cached_transform()
     if not active or not active.external then return false end
     local src = url_decode(active['external-filename'] or '') or ''
     if src == '' or src:find('_retimed', 1, true) or not utils.file_info(src) then return false end
+    if type(t.src) == "string" and t.src ~= "" then
+        if sub_identity(src) ~= sub_identity(t.src) then
+            mp.msg.info("autosubsync: cached transform is for a different sub, skipping")
+            return false
+        end
+    end
     local f = io.open(src, "r")
     if not f then return false end
     local content = f:read("*a"); f:close()
@@ -1420,9 +1439,15 @@ local function on_sid_changed()
     local path = url_decode(track['external-filename'] or '') or ''
     if path == '' or path:find('_retimed', 1, true) then return end
     if synced_paths[path] then return end
-    synced_paths[path] = true
     if auto_timer then auto_timer:kill() end
-    auto_timer = mp.add_timeout(config.auto_sync_delay, auto_sync_on_load)
+    auto_timer = mp.add_timeout(config.auto_sync_delay, function()
+        auto_sync_on_load()
+        local _, active = get_active_track('sub')
+        local loaded = active and url_decode(active['external-filename'] or '') or ''
+        if loaded:find('_retimed', 1, true) or just_applied_cache then
+            synced_paths[path] = true
+        end
+    end)
 end
 
 ------------------------------------------------------------
@@ -1657,3 +1682,8 @@ end)
 -- Auto-sync a subtitle as soon as it gets selected (e.g. when ar_subs loads
 -- the Arabic track). Fires only for external, non-retimed tracks, once each.
 mp.observe_property("sid", "native", on_sid_changed)
+mp.register_event("end-file", function()
+    if auto_timer then auto_timer:kill(); auto_timer = nil end
+    synced_paths = {}
+    just_applied_cache = false
+end)

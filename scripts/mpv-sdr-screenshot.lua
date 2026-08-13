@@ -64,7 +64,21 @@ local function screenshot()
     local final_path = string.format("%s/%s [%s]-%03d.png", directory, stem, stamp, sequence)
     local temp_path = final_path .. ".tmp.png"
 
-    mp.command_native({"screenshot-to-file", temp_path, "video"})
+    local function restore()
+        for name, value in pairs(saved) do
+            if value ~= nil then pcall(mp.set_property, name, value) end
+        end
+    end
+
+    local ok = pcall(function()
+        mp.command_native({"screenshot-to-file", temp_path, "video"})
+    end)
+    if not ok then
+        restore()
+        busy = false
+        mp.osd_message("SDR screenshot failed", 2.5)
+        return
+    end
 
     local attempts = 0
     local function finish()
@@ -75,9 +89,7 @@ local function screenshot()
                 mp.add_timeout(0.05, finish)
                 return
             end
-            for name, value in pairs(saved) do
-                if value ~= nil then mp.set_property(name, value) end
-            end
+            restore()
             busy = false
             mp.osd_message("SDR screenshot failed", 2.5)
             return
@@ -85,10 +97,7 @@ local function screenshot()
 
         file:close()
         os.rename(temp_path, final_path)
-
-        for name, value in pairs(saved) do
-            if value ~= nil then mp.set_property(name, value) end
-        end
+        restore()
 
         clipboard_command = mp.command_native_async({
             name = "subprocess",

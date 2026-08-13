@@ -40,9 +40,16 @@ local function sh_quote(s)
 end
 
 -- Keys/namespaces go inside SQL literals; keep them to a safe charset so
--- quote-doubling is the only escaping needed.
+-- quote-doubling is the only escaping needed. Append a hash of the original
+-- so "Foo:Bar" and "Foo/Bar" (both "Foo_Bar" after gsub) do not collide.
 local function sql_safe(s)
-  return (tostring(s):gsub("[^%w%._:%- ]", "_"):gsub("'", "''"))
+  s = tostring(s)
+  local h = 5381
+  for i = 1, #s do
+    h = (h * 33 + s:byte(i)) % 0x100000000
+  end
+  local safe = s:gsub("[^%w%._:%- ]", "_"):gsub("'", "''")
+  return safe .. "_" .. string.format("%08x", h)
 end
 
 local function tmp_path(tag)

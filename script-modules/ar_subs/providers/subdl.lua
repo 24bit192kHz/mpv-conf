@@ -406,7 +406,7 @@ local function zip_members_safe(path)
   local u = get_utils()
   if not u then return true end
   local res = u.subprocess({ args = { "unzip", "-Z1", path }, cancellable = false })
-  if res.status ~= 0 or not res.stdout then return true end
+  if res.status ~= 0 or not res.stdout then return false end
   for member in res.stdout:gmatch("[^\r\n]+") do
     local m = member:gsub("\\", "/")
     if m:match("^/") or m:match("^%a:") then return false end
@@ -614,8 +614,8 @@ function M.download_async(sub, on_done)
   end
 
   local function do_curl(url, key_used, is_retry, fallback_name)
-    local tmp_zip = "/tmp/subdl_dl_" .. os.time() .. "_" .. math.random(10000) .. ".zip"
-    local tmp_dir = "/tmp/subdl_dl_" .. os.time() .. "_" .. math.random(10000)
+    local tmp_zip = "/tmp/subdl_dl_" .. tmp_tag() .. ".zip"
+    local tmp_dir = "/tmp/subdl_dl_" .. tmp_tag()
     local curl_args = {
       "curl", "-sS", "-o", tmp_zip, "-w", "%{http_code}",
       "--connect-timeout", "10", "--max-time", "20",
@@ -694,10 +694,11 @@ function M.download_async(sub, on_done)
         end
       end
 
+      local desc = describe_download(tmp_zip, code)
       os.remove(tmp_zip)
 
       if not srt_content then
-        log("warn", "SubDL: download yielded no subtitle (" .. describe_download(tmp_zip, code) .. ")")
+        log("warn", "SubDL: download yielded no subtitle (" .. desc .. ")")
         if on_done then on_done(nil, code, url, nil) end
         return
       end
@@ -712,7 +713,19 @@ function M.download_async(sub, on_done)
   -- Retry once with the alternate key on failure, then fall back to the zip.
   local unpack_files = sub.unpack_files
   if type(unpack_files) == "table" and #unpack_files > 0 then
+    local want_ep = tonumber(sub.episode_number or sub.episode)
+    local want_se = tonumber(sub.season_number or sub.season)
     local uf = unpack_files[1]
+    if want_ep then
+      for _, cand in ipairs(unpack_files) do
+        local n = (cand.name or ""):lower()
+        local s, e = n:match("s(%d+)e(%d+)")
+        if e and tonumber(e) == want_ep and (not want_se or not s or tonumber(s) == want_se) then
+          uf = cand
+          break
+        end
+      end
+    end
     local uf_url = uf and uf.url
     local uf_name = uf and uf.name
     if uf_url and uf_url ~= "" then
@@ -723,7 +736,7 @@ function M.download_async(sub, on_done)
       local function try_unpack(key, attempt)
         local url = uf_url
         if key ~= "" then url = M.rewrite_download_api_key(uf_url, key) end
-        local tmp_srt = "/tmp/subdl_uf_" .. os.time() .. "_" .. math.random(10000) .. ".srt"
+        local tmp_srt = "/tmp/subdl_uf_" .. tmp_tag() .. ".srt"
         return _mp.command_native_async({
           name = "subprocess",
           args = { "curl", "-sS", "-o", tmp_srt, "-w", "%{http_code}",

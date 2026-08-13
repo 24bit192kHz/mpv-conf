@@ -77,6 +77,9 @@ local retry_done = {}
 local cache = {}
 -- inflight: normalized-title -> boolean (prevent re-entrancy)
 local inflight = {}
+-- Bumped on every file-loaded/end-file so late TMDB callbacks cannot write
+-- is_anime (or read the new file's audio tracks) onto a different video.
+local probe_gen = 0
 
 -- Scene-name noise (Lua patterns have no alternation, so: loops, and %f[]
 -- frontiers so tokens only match as whole words).
@@ -143,7 +146,7 @@ local function curl_json(url, cb)
     capture_stderr = false,
   }, function(success, result)
     if not success or not result or result.status ~= 0 then
-      log("curl fail", url, tostring(result and result.status))
+      log("curl fail", (url:gsub("api_key=[^&]+", "api_key=***")), tostring(result and result.status))
       return cb(nil)
     end
     local out = result.stdout
@@ -169,7 +172,7 @@ local function has_japanese_audio()
   return false
 end
 
-local function probe(raw_title)
+local function probe(raw_title, gen, ja_audio)
   local norm = normalize(raw_title)
   if norm == "" then norm = normalize(title_from_path(mp.get_property("path", ""))) end
   if norm == "" then return end
@@ -182,18 +185,26 @@ local function probe(raw_title)
   if inflight[norm] then return end
   inflight[norm] = true
 
-  local q = norm:gsub("%s+", "+")
+  local q = (norm:gsub("([^%w%-_%.~ ])", function(c)
+    return string.format("%%%02X", c:byte())
+  end):gsub(" ", "+"))
   local url = string.format("https://api.themoviedb.org/3/search/multi?api_key=%s&query=%s",
     cfg.tmdb_api_key, q)
   log("query", (url:gsub("api_key=[^&]+", "api_key=***")))
   curl_json(url, function(j)
     inflight[norm] = nil
+    if gen ~= probe_gen then
+      log("stale probe dropped", norm)
+      return
+    end
     if not j or not j.results or #j.results == 0 then
       if not j and not retry_done[norm] then
         -- Transport failure (curl/TMDB hiccup): one retry, made visible.
         retry_done[norm] = true
         mp.msg.warn("anime_detect: TMDB lookup failed, retrying once")
-        mp.add_timeout(2, function() probe(raw_title) end)
+        mp.add_timeout(2, function()
+          if gen == probe_gen then probe(raw_title, gen, ja_audio) end
+        end)
         return
       end
       if not j then
@@ -241,7 +252,7 @@ local function probe(raw_title)
     -- reaches here -- it fails the Animation genre gate.
     if cfg.japanese_only == "yes"
       and best.original_language ~= "ja"
-      and not has_japanese_audio() then
+      and not ja_audio then
       finalize(false, best.original_language)
       return
     end
@@ -268,23 +279,48 @@ end
 local function on_loaded()
   local path = mp.get_property("path", "") or ""
   log("file-loaded path=", path)
-  mp.set_property("user-data/anime_detect/is_anime", "0")
+  probe_gen = probe_gen + 1
+  local gen = probe_gen
   mp.set_property("user-data/anime_detect/title", "")
-  if cfg.tmdb_api_key == "" then log("no tmdb key"); return end
-  if path == "" then return end
+  if cfg.tmdb_api_key == "" then
+    mp.set_property("user-data/anime_detect/is_anime", "0")
+    log("no tmdb key"); return
+  end
+  if path == "" then
+    mp.set_property("user-data/anime_detect/is_anime", "0")
+    return
+  end
   local proto = mp.get_property("protocol", "") or ""
-  if skip[proto] then log("skip proto", proto); return end
-  if not is_video(path) then log("skip non-video", path); return end
+  if skip[proto] then
+    mp.set_property("user-data/anime_detect/is_anime", "0")
+    log("skip proto", proto); return
+  end
+  if not is_video(path) then
+    mp.set_property("user-data/anime_detect/is_anime", "0")
+    log("skip non-video", path); return
+  end
 
   local ftitle = mp.get_property("force-media-title", nil)
   local title = (ftitle and ftitle ~= "") and ftitle or title_from_path(path)
-  if title == "" then return end
+  if title == "" then
+    mp.set_property("user-data/anime_detect/is_anime", "0")
+    return
+  end
   mp.set_property("user-data/anime_detect/title", title)
-  probe(title)
+  -- Apply a session cache hit before clearing, so [Anime] does not flash
+  -- off/on when the same title is already known.
+  local norm = normalize(title)
+  if cache[norm] ~= nil then
+    mp.set_property("user-data/anime_detect/is_anime", cache[norm] and "1" or "0")
+  else
+    mp.set_property("user-data/anime_detect/is_anime", "0")
+  end
+  probe(title, gen, has_japanese_audio())
 end
 
 mp.register_event("file-loaded", on_loaded)
 mp.register_event("end-file", function()
+  probe_gen = probe_gen + 1
   mp.set_property("user-data/anime_detect/is_anime", "0")
   mp.set_property("user-data/anime_detect/title", "")
 end)

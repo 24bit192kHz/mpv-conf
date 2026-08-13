@@ -158,12 +158,23 @@ local function hot_lru()
     end
 end
 
+local function djb2_hex(s)
+    local h = 5381
+    for i = 1, #s do
+        h = (h * 33 + s:byte(i)) % 0x100000000
+    end
+    return string.format("%08x", h)
+end
+
 -- Path mpv should load: decompresses .zst into the hot dir on first use,
 -- returns plain paths unchanged. Touches the hot file so LRU keeps it.
+-- Hot names include a parent-dir hash so two shows' "Arabic.ass.zst" never
+-- share one decompressed file.
 M.ensure = function(path)
     if type(path) ~= "string" or not M.is_compressed(path) then return path end
+    local dir = path:match("(.+)/[^/]+$") or ""
     local base = path:match("([^/]+)$"):sub(1, -5)
-    local out = M.hot_dir() .. "/" .. base
+    local out = M.hot_dir() .. "/" .. djb2_hex(dir) .. "_" .. base
     local f = io.open(out, "rb")
     if f then
         f:close()
@@ -174,7 +185,7 @@ M.ensure = function(path)
         hot_lru()
         return out
     end
-    return path -- let the caller's own missing-file handling report it
+    return nil
 end
 
 -- Compress a freshly saved subtitle in place (name.ass -> name.ass.zst).
