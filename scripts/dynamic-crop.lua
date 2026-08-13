@@ -77,6 +77,7 @@ local full_frame_restore_started_at = nil
 local last_applied_needed_at = nil
 local startup_pause_active = false
 local startup_pause_was_paused = false
+local startup_pause_timer = nil
 local initial_scan_completed = false
 local runtime_mode = opts.enabled and "continuous" or "disabled"
 local one_shot_locked = false
@@ -111,6 +112,7 @@ end
 -- later in the file; declare the locals here so the closure binds them.
 local record_scan_failure
 local release_startup_pause
+local playback_ended
 
 local function start_sidecar()
     if sidecar_started then return end
@@ -214,7 +216,7 @@ local function frame_duration_seconds()
     return 1 / fps
 end
 
-local function playback_ended()
+playback_ended = function()
     return mp.get_property_native("eof-reached") == true
 end
 
@@ -258,10 +260,24 @@ local function hold_startup_until_first_scan()
     if not startup_pause_was_paused then
         mp.set_property_bool("pause", true)
     end
+    -- vo=null / 1s clips / a sidecar that never posts a crop would otherwise
+    -- stay paused forever. Unblock playback if the first scan is late.
+    if startup_pause_timer then startup_pause_timer:kill() end
+    startup_pause_timer = mp.add_timeout(2.0, function()
+        startup_pause_timer = nil
+        if startup_pause_active then
+            mp.msg.warn("dynamic_crop: first scan timed out, releasing startup pause")
+            release_startup_pause()
+        end
+    end)
 end
 
 release_startup_pause = function()
     initial_scan_completed = true
+    if startup_pause_timer then
+        startup_pause_timer:kill()
+        startup_pause_timer = nil
+    end
     if startup_pause_active and not startup_pause_was_paused then
         mp.set_property_bool("pause", false)
     end

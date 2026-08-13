@@ -343,7 +343,7 @@ local function http_get_json_async(url, opts, on_done)
         else
             if on_done then on_done(false, nil, result.http_code or 0, result.remaining) end
         end
-    end)
+    end))
     return current_async_handle
 end
 
@@ -360,7 +360,7 @@ local function http_get_raw_async(url, opts, on_done)
     }, function(success, result)
         current_async_handle = nil
         if on_done then on_done(result.body, result.http_code or 0) end
-    end)
+    end))
 end
 
 -- Run command with timeout and retry logic
