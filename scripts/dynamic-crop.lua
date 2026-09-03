@@ -93,14 +93,17 @@ local function expand_path(path)
 end
 
 local function script_ipc_socket()
+    -- Talk to THIS instance: prefer the live listener (mpv.conf's
+    -- input-ipc-server, or a CLI --input-ipc-server override). Forcing the
+    -- configured path when mpv listens elsewhere leaves the sidecar dialing
+    -- a socket nobody listens on. Only invent a path when mpv listens on
+    -- nothing; start_sidecar() then binds it (single string -- runtime
+    -- array sets are ignored and comma-joined strings bind literally).
+    local existing = mp.get_property("input-ipc-server", "")
+    local live = existing:match("^([^,]+)") or ""
+    if live ~= "" then return live end
     if opts.mpv_socket and opts.mpv_socket ~= "" then
         return opts.mpv_socket
-    end
-    -- Reuse mpv.conf's input-ipc-server so hyprshaderd / remotes keep
-    -- /tmp/mpvsocket. Only invent a private socket when none exists.
-    local existing = mp.get_property("input-ipc-server", "")
-    if existing ~= "" then
-        return existing
     end
     local pid = mp.get_property_number("pid", math.floor(mp.get_time() * 1000000))
     return string.format("/tmp/mpv-dynamic-crop-%d.sock", pid)
@@ -119,11 +122,10 @@ local function start_sidecar()
     sidecar_started = true
     sidecar_socket = script_ipc_socket()
     if not ipc_server_assigned then
-        -- If mpv already listens on the target path (e.g. input-ipc-server in
-        -- mpv.conf matches dynamic_crop-mpv_socket), reuse the live listener:
-        -- set_property with an identical value is a no-op in mpv, so removing
-        -- the socket first would leave the sidecar with nothing to connect to.
-        if mp.get_property("input-ipc-server", "") ~= sidecar_socket then
+        -- The socket came from script_ipc_socket(): either already live
+        -- (nothing to do) or invented (bind it so the sidecar can connect).
+        local current = "," .. mp.get_property("input-ipc-server", "") .. ","
+        if not current:find("," .. sidecar_socket .. ",", 1, true) then
             os.remove(sidecar_socket)
             mp.set_property("input-ipc-server", sidecar_socket)
         end
