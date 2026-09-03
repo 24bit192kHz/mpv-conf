@@ -9,6 +9,7 @@
 #include <unistd.h>
 
 #include <algorithm>
+#include <cctype>
 #include <cerrno>
 #include <chrono>
 #include <cmath>
@@ -278,6 +279,14 @@ std::vector<std::string> split_csv_line(const std::string& line) {
     return fields;
 }
 
+bool is_full_range_tag(const std::string& color_range) {
+    std::string tag = color_range;
+    for (char& c : tag) {
+        c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+    }
+    return tag == "pc" || tag == "jpeg" || tag == "full";
+}
+
 VideoSignal probe_video_signal(const fs::path& source) {
     ProcessResult result = run_process({
         "ffprobe",
@@ -316,7 +325,11 @@ VideoSignal probe_video_signal(const fs::path& source) {
         bit_depth = std::stoi(match[1].str());
     }
     const std::string color_range = fields.size() > 1 ? fields[1] : "tv";
-    return VideoSignal{bit_depth, color_range == "tv"};
+    // ffprobe: tv/mpeg = limited, pc/jpeg = full, unknown = unspecified.
+    // Untagged Blu-ray remuxes report unknown but still use TV black (luma 16).
+    // Only treat an explicit full-range tag as PC; everything else uses the
+    // limited-range cropdetect floor so detect_limit=2 cannot miss letterbox.
+    return VideoSignal{bit_depth, !is_full_range_tag(color_range)};
 }
 
 double cropdetect_limit(const AnalyzerConfig& config, const VideoSignal& signal) {

@@ -26,6 +26,9 @@ local mark_show_slow
 local prefetch_next
 local prefetch_pending
 local read_ref_manifest
+local just_applied_cache = false
+local sync_via_ffsubsync
+local shutting_down = false
 
 -- Config
 -- Options can be changed here or in a separate config file.
@@ -73,6 +76,11 @@ local config = {
     -- Arabic SubDL sub doesn't have -> true offset +120s). 600s = 10 min
     -- covers recap/Cold-open shifts but rejects garbage far-match anchors.
     ffsubsync_max_offset = 600,
+    -- Audio VAD uses a tighter cap. A 10-min mid-film window with 600s of
+    -- search room slides almost a full reel (Enemy: -595s / 0.96). Same-cut
+    -- movie subs are seconds off; 60s is ffsubsync's own default. Sub-to-sub
+    -- keeps ffsubsync_max_offset (Lain recap +120s).
+    ffsubsync_audio_max_offset = 60,
     -- Seconds to wait after a subtitle is selected before auto-syncing, so
     -- the loader (e.g. ar_subs) finishes adding tracks first.
     auto_sync_delay = 0.7,
@@ -97,6 +105,18 @@ local config = {
     -- reference. Audio packets are densely interleaved, so the read stays
     -- proportional to the window even on badly-muxed files.
     sync_window_sparse_cap = 900,
+    -- Audio VAD decode length. ffsubsync seeks to a dialogue-dense slice
+    -- (--start-seconds) and reads only this many seconds (--max-duration).
+    -- 10 min of talk is enough to lock a global offset; decoding 40–120 min
+    -- of a feature does not help and is the slow path on PGS remuxes.
+    sync_audio_slice = 600,
+    -- Embedded TEXT extract cap (seconds). The Arabic file's cue density can
+    -- pick a 900s window (recap-shifted download); the muxed English track is
+    -- already timed to this video and does not need that. Lain's default
+    -- forced track is mostly OP/title-cards in the first 10 min; 600s still
+    -- has <100 dialogue cues and a 300s slice locks a garbage offset.
+    -- Extract 900s once (retry used to do 600 then 900 = two demuxes).
+    sync_window_embedded_cap = 900,
     -- Sub extraction slower than this (seconds) marks the SHOW (directory)
     -- as slow: later episodes of the same show go audio-first immediately
     -- instead of paying the interleaving-lag traversal again.
@@ -106,6 +126,14 @@ local config = {
     -- is instant. Costs background I/O during playback; the read is niced
     -- and only runs once per next-episode.
     prefetch_next_episode = true,
+
+    -- testing2: Argos-translated default embedded sub (or sherpa ASR) as a
+    -- timed Arabic oracle; rewrite the downloaded best-score sub's timestamps
+    -- from matched oracle cues. off = current ffsubsync-only path.
+    -- on = Argos path, fall back to ffsubsync on failure.
+    -- compare = run both, write a JSON report next to the retimed file.
+    timing_ref_mode = "compare",
+    timing_ref_python = "",
 }
 mpopt.read_options(config, 'autosubsync')
 
@@ -150,6 +178,14 @@ local function subprocess(args)
         capture_stderr = true,
         args = args
     }
+end
+
+-- mp.get_property("duration") returns (value, err) on shutdown; tonumber
+-- then sees the error string as a base and throws. Native is a number or nil.
+local function prop_number(name, default)
+    local v = mp.get_property_native(name)
+    if type(v) == "number" then return v end
+    return default or 0
 end
 
 -- All autosubsync state lives under the shared mpv cache root, sibling of
@@ -236,14 +272,35 @@ local function episode_key()
     return djb2_hex(path .. "|" .. size .. "|" .. mtime)
 end
 
+-- False locks from a 10-min audio window: PAL 24/25 (~0.96) plus an offset
+-- that saturates --max-offset-seconds (Enemy UHD: -595.62s / 0.96). A real
+-- recap shift is +120s at scale ~1; a real PAL transfer is ~1.042 with a
+-- small offset. Reject a search that rode the offset cap.
+local function transform_plausible(offset, scale)
+    if type(offset) ~= "number" then return false end
+    scale = tonumber(scale) or 1
+    local maxoff = tonumber(config.ffsubsync_max_offset) or 600
+    if math.abs(offset) > maxoff * 0.9 then return false end
+    if scale < 0.90 or scale > 1.10 then return false end
+    return true
+end
+
 local function load_show_transform()
     if not config.cache_show_transform then return nil end
-    local f = io.open(TRANSFORM_DIR .. "/" .. episode_key() .. ".json", "r")
+    local path = TRANSFORM_DIR .. "/" .. episode_key() .. ".json"
+    local f = io.open(path, "r")
     if not f then return nil end
     local raw = f:read("*a"); f:close()
     local t = utils.parse_json(raw)
     if type(t) ~= "table" or type(t.offset) ~= "number" then return nil end
     if type(t.scale) ~= "number" then t.scale = 1.0 end
+    if not transform_plausible(t.offset, t.scale) then
+        mp.msg.warn(string.format(
+            "autosubsync: dropping implausible cached transform offset=%.2f scale=%.4f",
+            t.offset, t.scale))
+        os.remove(path)
+        return nil
+    end
     -- Tie the cache to the retimed file it produced: if the user wipes the
     -- subdl cache (rm -rf ~/.cache/mpv) the retimed is gone too, and the
     -- cached offset+scale would silently reapply a stale transform on the
@@ -264,6 +321,12 @@ local function save_show_transform(offset, scale, retimed_path, src_path)
     -- offset but apply no stretch rather than distort every episode.
     if type(scale) ~= "number" or scale < 0.90 or scale > 1.10 then
         scale = 1.0
+    end
+    if not transform_plausible(offset, scale) then
+        mp.msg.warn(string.format(
+            "autosubsync: not caching implausible transform offset=%.2f scale=%.4f",
+            offset, scale))
+        return
     end
     subprocess({ "mkdir", "-p", TRANSFORM_DIR })
     local f = io.open(TRANSFORM_DIR .. "/" .. episode_key() .. ".json", "w")
@@ -362,6 +425,48 @@ local function cue_start_times(path)
     return times
 end
 
+local function fmt_hms(sec)
+    sec = math.floor(tonumber(sec) or 0)
+    if sec < 0 then sec = 0 end
+    return string.format("%d:%02d:%02d", math.floor(sec / 3600), math.floor(sec / 60) % 60, sec % 60)
+end
+
+-- Densest `win`-second interval of the active sub (cue count = talk proxy).
+-- Skips logos/credits. Returns start seconds and how many cues sit in the slice.
+local function pick_talky_audio_slice(win)
+    win = tonumber(win) or 600
+    local total = prop_number("duration", 0)
+    local _, active = get_active_track('sub')
+    local path = active and active.external and (url_decode(active['external-filename'] or '') or '') or ''
+    local times = (path ~= '' and utils.file_info(path)) and cue_start_times(path) or {}
+    table.sort(times)
+    if total <= 0 then return 0, #times end
+    if total <= win + 60 then return 0, #times end
+    local lo = math.min(180, math.max(0, total * 0.05))
+    local hi = math.max(lo, total - win - 120)
+    if #times == 0 then
+        return math.floor(lo + (hi - lo) * 0.35), 0
+    end
+    local best_n, best_t = -1, lo
+    local j = 1
+    for i = 1, #times do
+        local t0 = times[i]
+        if t0 > hi then break end
+        if t0 >= lo then
+            local limit = t0 + win
+            while j <= #times and times[j] < limit do j = j + 1 end
+            local n = j - i
+            if n > best_n then
+                best_n, best_t = n, t0
+            end
+        end
+    end
+    if best_n < 0 then
+        return math.floor(lo), 0
+    end
+    return math.floor(math.max(lo, math.min(hi, best_t))), best_n
+end
+
 -- Smallest window (seconds) whose [0, D] holds >= target_cues cues of the
 -- active sub. Falls back to the full duration when even the whole file
 -- can't reach the target (a sparse sub needs every cue it can get), and to
@@ -369,7 +474,7 @@ end
 -- (the old fixed cap). Never below the first ladder step (120s) so the
 -- OP/cold-open is inside the window even when dialogue starts late.
 local function dynamic_sync_window(target_cues)
-    local total = tonumber(mp.get_property("duration")) or 0
+    local total = prop_number("duration", 0)
     local _, active = get_active_track('sub')
     local path = active and active.external and (url_decode(active['external-filename'] or '') or '') or ''
     local times = (path ~= '' and utils.file_info(path)) and cue_start_times(path) or {}
@@ -502,25 +607,39 @@ local function sync_subtitles(ref_sub_path, force_engine)
     -- scoped here -- a local inside the branch is invisible outside it and
     -- the `not rejected` check silently reads a nil global.
     local rejected = false
+    local audio_npz_dest
+    -- True when the final reference is audio VAD (fresh decode OR cached
+    -- .npz reuse). A cache hit returns empty extra_args, so run() cannot
+    -- spot it by scanning for --serialize-speech; without this flag the
+    -- reuse would sync under the 600s sub-to-sub cap instead of the 60s
+    -- audio cap (Enemy UHD false lock: -595s / 0.96).
+    local audio_ref_active = false
     if engine_name == "ffsubsync" then
         local ref = reference_file_path
         local extra = {}
         -- Set when the reference came from a WINDOWED extraction; if the
         -- alignment fails on it we get one retry against the full file.
         local windowed_embedded = false
-        -- Set when the final reference is a subtitle (vs audio VAD): only
-        -- subtitle-derived transforms get the plausibility check, since
-        -- audio VAD is the ground truth and never needs rescuing.
+        -- Set when the final reference is an embedded text sub (vs PGS /
+        -- audio VAD). Text-sub results get an audio rescue if implausible;
+        -- PGS/audio false locks are rejected instead of treated as truth.
         local sub_to_sub_ref = false
         local active, window, sparse
         local total
         -- Audio VAD reference for a window: the cached serialized speech
         -- (.npz, instant reuse) if present, else a symlinked video plus the
         -- bounded-decode flags. Returns ref, extra_args.
-        local function audio_ref_args(win)
+        local function audio_ref_args(win, start)
+            start = math.floor(tonumber(start) or 0)
+            win = math.floor(tonumber(win) or 600)
             local dir2 = video_ref_dir()
-            local npz = dir2 .. "/video_" .. math.floor(win) .. ".npz"
-            if utils.file_info(npz) then return npz, {} end
+            local tagged = dir2 .. "/video_" .. start .. "_" .. win .. ".npz"
+            if utils.file_info(tagged) then return tagged, {}, tagged end
+            if start == 0 then
+                local legacy = dir2 .. "/video_" .. win .. ".npz"
+                if utils.file_info(legacy) then return legacy, {}, tagged end
+                if utils.file_info(dir2 .. "/video.npz") then return dir2 .. "/video.npz", {}, tagged end
+            end
             local link = dir2 .. "/video.mkv"
             subprocess({ "ln", "-sf", reference_file_path, link })
             -- --reference-stream takes an ffmpeg stream specifier: "0:N" is
@@ -528,9 +647,24 @@ local function sync_subtitles(ref_sub_path, force_engine)
             -- track-list position is off by one and would reference the
             -- stream AFTER the selected audio).
             local _, atr = get_active_track('audio')
-            return link, { "--serialize-speech",
+            local extra = { "--serialize-speech",
+                "--no-fix-framerate",
                 "--reference-stream", "0:" .. (atr and atr['ff-index'] or 0),
-                "--max-duration-seconds", string.format("%d", math.floor(win)) }
+                "--max-duration-seconds", string.format("%d", win) }
+            if start > 0 then
+                extra[#extra + 1] = "--start-seconds"
+                extra[#extra + 1] = tostring(start)
+            end
+            return link, extra, tagged
+        end
+        local function make_audio_ref()
+            local slice = tonumber(config.sync_audio_slice) or 600
+            local start, nwin = pick_talky_audio_slice(slice)
+            mp.msg.info(string.format(
+                "autosubsync: audio VAD %ds slice @ %s (%d sub cues in window)",
+                slice, fmt_hms(start), nwin))
+            notify(string.format("ffsubsync audio: %d min @ %s", math.floor(slice / 60 + 0.5), fmt_hms(start)), "info", 4)
+            return audio_ref_args(slice, start)
         end
         -- (max_time, n_cues, n_cues_past_limit) of the retimed file.
         local function retimed_stats(limit)
@@ -572,7 +706,7 @@ local function sync_subtitles(ref_sub_path, force_engine)
         -- past EOF -- "successful" garbage). Reject when the tail runs far
         -- past the media AND a substantial fraction of cues is past it.
         local function implausible_alignment()
-            local dur = tonumber(mp.get_property("duration")) or 0
+            local dur = prop_number("duration", 0)
             if dur <= 0 then return false end
             local maxt, n, past = retimed_stats(dur + 5)
             if not maxt or n < 10 then return false end
@@ -603,7 +737,7 @@ local function sync_subtitles(ref_sub_path, force_engine)
                 mp.msg.info("autosubsync: show extracts slowly (bad MKV interleaving); audio-first")
                 sparse = true
             end
-            total = tonumber(mp.get_property("duration")) or 0
+            total = prop_number("duration", 0)
             active = select(2, get_active_track('sub'))
             local best
             if not sparse then
@@ -630,7 +764,9 @@ local function sync_subtitles(ref_sub_path, force_engine)
                             count_cues(best.path), count_dialogue_cues(ref)), "info", 3)
                 end
             else
-                local aref, aextra = audio_ref_args(window)
+                local aref, aextra, npz_dest = make_audio_ref()
+                audio_npz_dest = npz_dest
+                audio_ref_active = true
                 ref = aref
                 for _, a in ipairs(aextra) do table.insert(extra, a) end
             end
@@ -641,7 +777,18 @@ local function sync_subtitles(ref_sub_path, force_engine)
             -- for release-cut mismatches (a SubDL Arabic sub vs the coalgirls
             -- BD that opens with a 2-minute recap: true alignment +120s).
             -- 600s covers recap/OP shifts but rejects wrong-language anchors.
-            table.insert(args, "--max-offset-seconds"); table.insert(args, tostring(config.ffsubsync_max_offset))
+            local maxoff = config.ffsubsync_max_offset
+            if audio_ref_active then
+                maxoff = tonumber(config.ffsubsync_audio_max_offset) or 60
+            else
+                for _, a in ipairs(extra_args) do
+                    if a == "--serialize-speech" then
+                        maxoff = tonumber(config.ffsubsync_audio_max_offset) or 60
+                        break
+                    end
+                end
+            end
+            table.insert(args, "--max-offset-seconds"); table.insert(args, tostring(maxoff))
             for _, a in ipairs(extra_args) do table.insert(args, a) end
             return subprocess(args)
         end
@@ -666,12 +813,24 @@ local function sync_subtitles(ref_sub_path, force_engine)
         if ret ~= nil and ret.status == 0 and implausible_alignment() then
             if sub_to_sub_ref then
                 notify("Sub-to-sub alignment implausible; audio rescue...", "warn", 3)
-                local aref, aextra = audio_ref_args(window or 600)
+                local aref, aextra, npz_dest = make_audio_ref()
+                audio_npz_dest = npz_dest
+                audio_ref_active = true
                 ret = run(aref, aextra)
                 sub_to_sub_ref = false
             end
             if ret ~= nil and ret.status == 0 and implausible_alignment() then
                 rejected = true
+            end
+        end
+        if ret ~= nil and ret.status == 0 and not rejected then
+            local offset, scale = parse_ffsubsync_transform(
+                    (ret.stdout or "") .. "\n" .. (ret.stderr or ""))
+            if offset and not transform_plausible(offset, scale or 1) then
+                rejected = true
+                notify(string.format(
+                    "Rejected ffsubsync (offset %+.2fs, scale %.4f)",
+                    offset, scale or 1), "error", 6)
             end
         end
     else
@@ -690,6 +849,12 @@ local function sync_subtitles(ref_sub_path, force_engine)
             local offset, scale = parse_ffsubsync_transform(
                     (ret.stdout or "") .. "\n" .. (ret.stderr or ""))
             if offset then save_show_transform(offset, scale, retimed_subtitle_path, subtitle_path) end
+            if audio_npz_dest then
+                local produced = video_ref_dir() .. "/video.npz"
+                if utils.file_info(produced) and produced ~= audio_npz_dest then
+                    os.rename(produced, audio_npz_dest)
+                end
+            end
         end
         local old_sid = mp.get_property("sid")
         if mp.commandv("sub_add", retimed_subtitle_path) then
@@ -947,8 +1112,20 @@ local function extract_all_refs(dir, exclude_id, window)
     local tracks = {}
     for _, t in ipairs(get_loaded_tracks('sub')) do
         if (not t.external) and TEXT_SUB_CODECS[t.codec] and t.id ~= exclude_id then
-            table.insert(tracks, t)
+            local title = (t.title or ""):lower()
+            if not title:find("sign", 1, true) and not title:find("song", 1, true) then
+                table.insert(tracks, t)
+            end
         end
+    end
+    -- One stream is enough for sub-to-sub (default, else first). Songs+Signs
+    -- doubles the Chotab demux for a track we never sync to.
+    if #tracks > 1 then
+        local only = {}
+        for _, t in ipairs(tracks) do
+            if t.default then only[1] = t; break end
+        end
+        tracks = (#only > 0) and only or { tracks[1] }
     end
     if #tracks == 0 then return {} end
     subprocess({ "mkdir", "-p", dir })
@@ -961,7 +1138,7 @@ local function extract_all_refs(dir, exclude_id, window)
         local ext = REF_EXT[t.codec] or "ass"
         t._ref_file = t.id .. "." .. ext
         table.insert(args, "-map"); table.insert(args, "0:" .. t['ff-index'])
-        table.insert(args, "-f"); table.insert(args, ext)
+        table.insert(args, "-c:s"); table.insert(args, "copy")
         if window then
             table.insert(args, "-t"); table.insert(args, string.format("%d", math.floor(window)))
         end
@@ -974,6 +1151,7 @@ local function extract_all_refs(dir, exclude_id, window)
         if utils.file_info(dir .. "/" .. t._ref_file) then
             table.insert(list, {
                 id = t.id, lang = t.lang, codec = t.codec,
+                default = t.default and true or false,
                 file = t._ref_file, cues = count_dialogue_cues(dir .. "/" .. t._ref_file),
             })
         end
@@ -982,13 +1160,6 @@ local function extract_all_refs(dir, exclude_id, window)
     if mf then
         mf:write(utils.format_json({ window = window or 0, tracks = list }))
         mf:close()
-    end
-    -- Compress at rest; cue counts above were taken from the raw files and
-    -- the manifest keeps logical names (plain_ref resolves on read).
-    if zstd.available() then
-        for _, r in ipairs(list) do
-            zstd.archive_in_place(dir .. "/" .. r.file)
-        end
     end
     return list
 end
@@ -1096,10 +1267,13 @@ prefetch_next = function()
         if s.codec_type == "subtitle" then
             sub_id = sub_id + 1
             local ext = REF_EXT[s.codec_name]
-            if ext then
+            local title = (s.tags and (s.tags.title or s.tags.TITLE) or ""):lower()
+            if ext and #picks == 0
+                    and not title:find("sign", 1, true) and not title:find("song", 1, true) then
                 local file = sub_id .. "." .. ext
                 table.insert(args, "-map"); table.insert(args, "0:" .. s.index)
-                table.insert(args, "-f"); table.insert(args, ext)
+                table.insert(args, "-c:s"); table.insert(args, "copy")
+                table.insert(args, "-t"); table.insert(args, "900")
                 table.insert(args, dir .. "/" .. file)
                 table.insert(picks, { file = file, id = sub_id,
                     lang = s.tags and s.tags.language, codec = s.codec_name })
@@ -1122,16 +1296,11 @@ prefetch_next = function()
             end
         end
         if #list == 0 then return end
-        -- window 0 = full coverage -> satisfies any future min_window.
+        -- window 900 = matches sync_window_embedded_cap on the next play.
         local mf = io.open(dir .. "/manifest.json", "w")
         if mf then
-            mf:write(utils.format_json({ window = 0, tracks = list }))
+            mf:write(utils.format_json({ window = 900, tracks = list }))
             mf:close()
-        end
-        if zstd.available() then
-            for _, p in ipairs(list) do
-                zstd.archive_in_place(dir .. "/" .. p.file)
-            end
         end
         mp.msg.info("autosubsync: prefetched refs ready: " .. nxt)
     end)
@@ -1190,15 +1359,184 @@ pick_best_embedded_ref = function(refs)
     return best
 end
 
+-- Mux default-flag first (the track players actually show), then the English
+-- / densest fallback used by pick_best_embedded_ref.
+local function pick_default_embedded_ref(refs)
+    if not refs or #refs == 0 then return nil end
+    for _, r in ipairs(refs) do
+        if r.default then return r end
+    end
+    return pick_best_embedded_ref(refs)
+end
+
+local function has_embedded_text_sub()
+    for _, t in ipairs(mp.get_property_native("track-list") or {}) do
+        if t.type == "sub" and not t.external and TEXT_SUB_CODECS[t.codec] then
+            return true
+        end
+    end
+    return false
+end
+
+-- Cache hit only -- never ffmpeg. timing_ref must not block the lua thread
+-- on a full-file extract (Chotab/Lain: 20s+; quit mid-extract used to look
+local function cached_default_embedded_ref(exclude_id)
+    local dir = video_ref_dir()
+    local list, covered = read_ref_manifest(dir)
+    if not list then return nil end
+    -- A thin windowed extract (e.g. a 120s ladder step) is not an oracle:
+    -- the sub-to-sub path widens or rejects it. Only build timing oracles
+    -- from full (0) or wide (>= 600s) coverage, else fall back to audio VAD.
+    if covered and covered > 0 and covered < 600 then return nil end
+    local refs = {}
+    for _, r in ipairs(list) do
+        if r.id ~= exclude_id then
+            r.path = plain_ref(dir .. "/" .. r.file)
+            refs[#refs + 1] = r
+        end
+    end
+    local def = pick_default_embedded_ref(refs)
+    if def and def.path and h.file_exists(def.path) then return def end
+    return nil
+end
+
+local function timing_ref_script()
+    return mp.command_native({ "expand-path", "~~/script-modules/autosubsync/timing_ref.py" })
+end
+
+local function timing_ref_python()
+    if not h.is_empty(config.timing_ref_python) and h.file_exists(config.timing_ref_python) then
+        return config.timing_ref_python
+    end
+    local py = CACHE_BASE .. "/venv/bin/python"
+    if h.file_exists(py) then return py end
+    notify("Creating autosubsync venv (argostranslate, first run)...", "info", 5)
+    subprocess({ "mkdir", "-p", CACHE_BASE })
+    local ret = subprocess({ "uv", "venv", "--python", "3.12", CACHE_BASE .. "/venv" })
+    if ret == nil or ret.status ~= 0 or not h.file_exists(py) then
+        ret = subprocess({ "python3", "-m", "venv", CACHE_BASE .. "/venv" })
+    end
+    if not h.file_exists(py) then
+        mp.msg.error("timing_ref: venv create failed")
+        return nil
+    end
+    local pip = subprocess({ "uv", "pip", "install", "--python", py, "argostranslate" })
+    if pip == nil or pip.status ~= 0 then
+        pip = subprocess({ py, "-m", "pip", "install", "-q", "argostranslate" })
+    end
+    if pip == nil or pip.status ~= 0 then
+        mp.msg.error("timing_ref: pip install argostranslate failed")
+        return nil
+    end
+    return py
+end
+
+-- Translate the default embedded sub (or sherpa ASR) to Arabic and rewrite
+-- the downloaded best-score sub's timestamps from matched oracle cues.
+-- Returns true if a retimed file was loaded. compare mode also runs
+-- ffsubsync and writes <out>.json (median |error| vs the oracle).
+local function sync_via_timing_ref()
+    local mode = (config.timing_ref_mode or "off"):lower()
+    if mode == "" or mode == "off" or mode == "no" or mode == "false" then
+        return false
+    end
+    local _, active = get_active_track('sub')
+    if not active or not active.external then return false end
+    local src = url_decode(active['external-filename'] or '') or ''
+    if src == '' or src:find('_retimed', 1, true) then return false end
+    -- Probe the oracle BEFORE the venv bootstrap: timing_ref_python() can
+    -- create a venv and pip-install (blocking subprocesses, minutes on
+    -- first run). PGS-only remuxes have no text oracle and must early-out
+    -- without paying for that.
+    local launch_path = mp.get_property("path")
+    local def = cached_default_embedded_ref(active.id)
+    local use_ref_sub = def ~= nil
+    if not use_ref_sub and not has_embedded_text_sub() then
+        -- PGS/image remuxes have no text oracle. Whisper on a quiet opening
+        -- produces a 1-cue "thin" result; a real large-v3 pass takes minutes
+        -- and still cannot lock a global offset. Audio VAD is the on-load path.
+        return false
+    end
+    local py = timing_ref_python()
+    local script = timing_ref_script()
+    if not py or not h.file_exists(script) then return false end
+    local ext = get_extension(src) or ".ass"
+    local stem = remove_extension(src):gsub('_retimed$', '')
+    local out = stem .. "_retimed_argos" .. ext
+    local cmd = {
+        py, script, "retime",
+        "--video", launch_path,
+        "--ar-sub", src,
+        "--out", out,
+    }
+    if use_ref_sub then
+        local ref = dialogue_only_ass(def.path)
+        table.insert(cmd, "--ref-sub")
+        table.insert(cmd, ref)
+        notify("Argos timing-ref: default embedded sub → AR...", "info", 5)
+    else
+        notify("Argos timing-ref: extracting embedded text sub → AR...", "info", 5)
+    end
+    if mode == "compare" then
+        table.insert(cmd, "--compare-ffsubsync")
+        table.insert(cmd, stem .. "_retimed_ffsubsync" .. ext)
+        table.insert(cmd, "--report")
+        table.insert(cmd, out .. ".json")
+    end
+    -- ASR/Argos can take minutes; do not freeze playback or fall through to
+    -- the 900s audio-VAD path. Return true so on-load skips ffsubsync.
+    mp.command_native_async({
+        name = "subprocess",
+        playback_only = false,
+        capture_stdout = true,
+        capture_stderr = true,
+        args = cmd,
+    }, function(_, ret)
+        -- The retime runs minutes-long; the user may have moved on. end-file
+        -- sets shutting_down but the next file-loaded clears it, so a bare
+        -- boolean cannot tell "previous file" from "current file". Compare
+        -- the video path: a stale completion must neither sub_add the old
+        -- file's retimed output nor arm just_applied_cache (which would make
+        -- the new file skip its own sync) nor trigger rescue ffsubsync here.
+        if shutting_down or mp.get_property("path") ~= launch_path then return end
+        local ok = type(ret) == "table" and ret.status == 0 and h.file_exists(out)
+        if not ok then
+            local err = type(ret) == "table" and ((ret.stderr or "") .. (ret.stdout or "")) or "killed"
+            mp.msg.warn("timing_ref failed: " .. err)
+            notify("Argos/sherpa oracle too thin; falling back to ffsubsync audio...", "info", 5)
+            if sync_via_ffsubsync then sync_via_ffsubsync() end
+            return
+        end
+        if ret.stdout and ret.stdout ~= "" then
+            mp.msg.info("timing_ref: " .. ret.stdout:sub(1, 800))
+        end
+        local old_sid = mp.get_property("sid")
+        if mp.commandv("sub_add", out) then
+            mp.set_property("sub-delay", 0)
+            if config.unload_old_sub and old_sid then
+                mp.commandv("sub_remove", old_sid)
+            end
+            notify("Subtitle synchronized (argos timing-ref).", nil, 3)
+            just_applied_cache = true
+        end
+    end)
+    return true
+end
+
 -- Fast subtitle<->subtitle sync to the best (most-cues) embedded sub. Returns
 -- true on a completed sync. If gate_min_cues is set, a too-sparse reference
 -- (signs/songs) is rejected (returns false) so the caller can fall back.
 local function sync_to_best_embedded(gate_min_cues, exclude_id)
     local _, active = get_active_track('sub')
     if active == nil then return false end
-    local refs = get_embedded_refs(exclude_id or active.id,
-            dynamic_sync_window(math.max(config.sync_window_target_cues, config.auto_sync_min_cues)))
+    local cap = tonumber(config.sync_window_embedded_cap) or 900
+    local refs = get_embedded_refs(exclude_id or active.id, cap)
     local best = pick_best_embedded_ref(refs)
+    if (not best or (gate_min_cues and best.cues < gate_min_cues)) and cap < 900 then
+        mp.msg.info("autosubsync: embedded ref thin in " .. cap .. "s; retry 900s")
+        refs = get_embedded_refs(exclude_id or active.id, 900)
+        best = pick_best_embedded_ref(refs)
+    end
     if not best then return false end
     if gate_min_cues and best.cues < gate_min_cues then
         notify(string.format("Embedded sub too sparse to auto-sync (%d cues); press n for audio.", best.cues), "info", 4)
@@ -1305,14 +1643,8 @@ local function transform_srt(content, offset, scale)
     end))
 end
 
--- Set by apply_cached_transform when it succeeds. A late-firing timer (set
--- before the cache was applied) must NOT then run sync_to_best_embedded and
--- have the syncer compound another offset on top of the cached retimed -- we
--- already wrote and loaded the correct retimed, doing it again is always
--- wrong. Declared before apply_cached_transform so the assignment inside it
--- hits this LOCAL (declaring it after made the assignment a global write and
--- left this guard permanently dead).
-local just_applied_cache = false
+-- just_applied_cache is forward-declared at the top of the file so
+-- sync_via_timing_ref (defined above) writes the same local.
 
 -- Apply the cached per-episode transform to the active external subtitle.
 -- Returns true if a retimed sub was produced and loaded. Refuses to apply
@@ -1366,7 +1698,7 @@ end
 -- Auto-reference sync: let sync_subtitles pick the cheapest viable reference
 -- (embedded sub if dense enough, cached .npz, then bounded audio VAD). Kept
 -- as a named wrapper so the on-load path can be read at a glance.
-local function sync_via_ffsubsync()
+sync_via_ffsubsync = function()
     sync_subtitles(nil, config.audio_subsync_tool ~= "ask" and config.audio_subsync_tool or "ffsubsync")
 end
 
@@ -1380,6 +1712,9 @@ local function auto_sync()
         notify("Active subtitle is embedded (already timed); nothing to sync.", "info", 3)
         return
     end
+    if sync_via_timing_ref() then
+        return
+    end
     if not sync_to_best_embedded(nil) then
         sync_via_ffsubsync()
     end
@@ -1389,7 +1724,7 @@ end
 -- Keeps the automatic audio-seed from triggering a multi-minute decode on a
 -- long TrueHD/DTS/FLAC 4K file.
 local function audio_is_cheap()
-    local dur = tonumber(mp.get_property("duration")) or 0
+    local dur = prop_number("duration", 0)
     for _, t in ipairs(mp.get_property_native("track-list")) do
         if t.type == "audio" and t.selected then
             local c = (t.codec or ""):lower()
@@ -1413,11 +1748,24 @@ end
 local synced_paths = {}
 local auto_timer = nil
 local function auto_sync_on_load()
+    if shutting_down then return end
     if just_applied_cache then
         just_applied_cache = false
         return
     end
+    local tr_mode = (config.timing_ref_mode or "off"):lower()
+    local timing_ref_on = tr_mode == "on" or tr_mode == "compare"
     if apply_cached_transform() then
+        return
+    end
+    if has_embedded_text_sub() then
+        -- Sub-to-sub is ~0.5s after a short extract. Skip Argos on this path:
+        -- after ffsubsync the active file is *_retimed and timing_ref no-ops.
+        if sync_to_best_embedded(config.auto_sync_min_cues) then
+            return
+        end
+    end
+    if timing_ref_on and sync_via_timing_ref() then
         return
     end
     if config.auto_sync_audio and audio_is_cheap() then
@@ -1682,7 +2030,11 @@ end)
 -- Auto-sync a subtitle as soon as it gets selected (e.g. when ar_subs loads
 -- the Arabic track). Fires only for external, non-retimed tracks, once each.
 mp.observe_property("sid", "native", on_sid_changed)
+mp.register_event("file-loaded", function()
+    shutting_down = false
+end)
 mp.register_event("end-file", function()
+    shutting_down = true
     if auto_timer then auto_timer:kill(); auto_timer = nil end
     synced_paths = {}
     just_applied_cache = false

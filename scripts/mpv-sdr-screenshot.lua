@@ -56,8 +56,8 @@ local function screenshot()
     mp.set_property("target-colorspace-hint-mode", "target")
     mp.set_property("screenshot-tag-colorspace", "no")
     mp.set_property("screenshot-high-bit-depth", "no")
-    -- blend-subtitles=yes burns ASS into the video plane; disable for a
-    -- clean SDR frame (gpu-next still needs the global yes for seek-subs).
+    -- blend-subtitles=video burns ASS into the video plane; disable for a
+    -- clean SDR frame (gpu-next still needs the global video mode for seek-subs).
     mp.set_property("blend-subtitles", "no")
 
     local directory = mp.command_native({"expand-path", "~/Pictures/mpv"})

@@ -1996,7 +1996,7 @@ local function check_existing_season_files(show_title, season, episode)
                 {target_file}, season, episode, valid_episodes, valid_pairs)
             if not matched then
                 mp.msg.warn(string.format(
-                    "SubDL: ignoring stale cached subtitle for %s S%02dE%02d: %s",
+                    "ar_subs: ignoring stale cached subtitle for %s S%02dE%02d: %s",
                     show_title, season, episode, target_file))
                 cached_seasons[season][episode] = nil
                 return false
@@ -2295,7 +2295,7 @@ local function enhanced_auto_fetch_if_needed()
         if local_sub then
             local vpath = mp.get_property("path")
             activation_util.activate(mp, local_sub, vpath, CACHE_TO_MEDIA_DIR)
-            mp.msg.info("SubDL: loaded subtitle from local DB", local_sub)
+            mp.msg.info("ar_subs: loaded subtitle from local index", local_sub)
             mp.osd_message("Loaded local DB subtitle", 2)
             return
         end

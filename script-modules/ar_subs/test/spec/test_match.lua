@@ -212,6 +212,14 @@ do
   H.eq("fmef hyphen-padded episode 05", r, "/p/Show - 05.srt")
 end
 
+-- Hash suffix 03b81f3c must not hide a delimited _03_ episode tag.
+do
+  H.reset()
+  local f = "/p/coalgirls_serial_experiments_lain_03_1520x1080_blu-ray_flac_03b81f3c.ass.zst"
+  local r = match.find_matching_episode_file({ f }, 1, 3, { [3] = true }, { [1] = { [3] = true } })
+  H.eq("fmef coalgirls _03_ vs hash 03b81f", r, f)
+end
+
 -- find_matching_episode_file: empty list returns nil
 do
   H.reset()

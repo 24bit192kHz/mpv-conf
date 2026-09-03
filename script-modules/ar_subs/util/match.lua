@@ -310,14 +310,16 @@ function M.find_matching_episode_file(sub_files, season, episode, valid_episodes
       if ep and ep > 0 and ep <= MAX_EPISODE then table.insert(ep_candidates, ep) end
     end
 
-    for num_str in filename_lower:gmatch("(%d+)") do
+    for pos, num_str in filename_lower:gmatch("()(%d+)") do
       local num = tonumber(num_str)
       if num and num > 0 and num <= MAX_EPISODE then
-        if not (filename_lower:find("[a-zA-Z]" .. num_str) or
-                filename_lower:find(num_str .. "[a-zA-Z]")) then
-          -- Drop resolutions only. Do not drop 4/5/6: "Show - 05.srt" is a
-          -- real episode tag. Channel layouts ("5.1") attach a letter/dot
-          -- and already fail the [a-zA-Z] adjacency check above.
+        -- Glued to a letter *at this run* (x264, 03b81f hash). Unanchored
+        -- find("[a-z]"..num) also hits a later hash and used to drop a real
+        -- `_03_` tag in coalgirls_..._lain_03_1520x1080_..._03b81f3c.
+        local before = pos > 1 and filename_lower:sub(pos - 1, pos - 1) or ""
+        local after = filename_lower:sub(pos + #num_str, pos + #num_str)
+        local glued = before:match("%a") or after:match("%a")
+        if not glued then
           if num ~= 1080 and num ~= 720 and num ~= 480 and num ~= 2160 then
             table.insert(ep_candidates, num)
           end
@@ -444,7 +446,7 @@ function M.find_matching_episode_file(sub_files, season, episode, valid_episodes
     if #ep_candidates > 1 then score = score - 10 end
     if #se_candidates > 1 then score = score - 5 end
 
-    mp.msg.debug(string.format("SubDL: file='%s' → eps=%d candidates, seas=%d candidates → score=%d", 
+    mp.msg.debug(string.format("ar_subs: file='%s' → eps=%d candidates, seas=%d candidates → score=%d", 
         filename, #ep_candidates, #se_candidates, score))
 
     if score > best_score then
@@ -455,15 +457,15 @@ function M.find_matching_episode_file(sub_files, season, episode, valid_episodes
 
   if best_match and best_score >= MIN_MATCH_SCORE then
     local chosen_name = best_match:match("([^/]+)$")
-    mp.msg.info(string.format("✅ Selected for E%02d (score=%d): %s",
+    mp.msg.info(string.format("ar_subs: selected for E%02d (score=%d): %s",
         episode, best_score, chosen_name))
     return best_match
   elseif best_match and best_score > 0 then
-    -- Low confidence match - skip this pack and try next subtitle
-    mp.msg.warn(string.format("SubDL: ⚠️ No good match for E%02d in this pack (best score=%d), trying next...", episode, best_score))
+    mp.msg.debug(string.format(
+        "ar_subs: no good filename match for E%02d (best score=%d)", episode, best_score))
     return nil
   else
-    mp.msg.warn(string.format("SubDL: ⚠️ No match for E%02d in this pack, trying next...", episode))
+    mp.msg.debug(string.format("ar_subs: no filename match for E%02d", episode))
     return nil
   end
 end

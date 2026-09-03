@@ -1,8 +1,8 @@
 # mpv config
 
-Personal mpv configuration: HDR profiles, a complete Arabic subtitle system
-(`ar_subs` downloader + `autosubsync` auto-timing), the uosc UI, shaders, and
-CUDA-backed dynamic crop.
+Personal mpv configuration: `gpu-next` HDR passthrough, a complete Arabic
+subtitle system (`ar_subs` downloader + `autosubsync` auto-timing), the uosc
+UI, shaders, and CUDA-backed dynamic crop.
 
 ## ar_subs — Arabic subtitles, end to end
 
@@ -27,19 +27,23 @@ search cache (SQLite + zstd) are shared by all three sources.
 is aligned to the video — embedded text subtitle first (extracted in one
 windowed ffmpeg pass, dialogue-only filtered, sub-to-sub ffsubsync), bounded
 audio VAD otherwise (capped window, serialized-speech cache). Computed
-offset+scale is cached per episode (replays apply it in ~20 ms), next
-episodes' refs are prefetched in the background, and implausible alignments
-(cues past end-of-media — wrong release) are rejected instead of loaded.
+offset+scale is cached per episode **and** tied to that subtitle file
+(replays apply it in ~20 ms; `Ctrl+Shift+V` does not reuse the previous
+candidate's offset). Next episodes' refs are prefetched in the background.
+Implausible alignments (cues past end-of-media — wrong release) are
+rejected instead of loaded. English sidecar `.srt` files do not skip the
+Arabic fetch.
 
 Keybindings: `n` re-sync, `Ctrl+N` sync menu, `F12` clear episode cache,
-`Ctrl+Shift+V` next candidate subtitle.
+`Ctrl+Shift+V` next candidate, `Ctrl+V` deep search, `Alt+V` manual search
+(`keylayout` remaps those chords on an Arabic layout).
 
 ## Anime stack
 
-- **Shaders** (`shaders/`): always-on KrigBilateral (chroma) + SSimSuperRes
-  (ringing/sharpness) + SSimDownscaler on top of `gpu-hq`. Anime4K v4.x
-  Mode A chains on `ALT+1`..`ALT+6`, `ALT+9` toggles the downscaler,
-  `ALT+0` clears all shaders.
+- **Shaders** (`shaders/`): `vo=gpu-next`. Always-on KrigBilateral (chroma)
+  + SSimSuperRes + SSimDownscaler on SDR. HDR (`[hdr-passthrough]`, pq/hlg)
+  uses an empty chain. `[sdr-native]` is transfer-gated (not pq/hlg).
+  Anime4K v4.x Mode A on `ALT+1`..`ALT+6`, `ALT+0` clears shaders.
 - **Auto profile**: `[Anime]` swaps in the Anime4K chain (replace, not
   stack; HDR sources excluded; height-gated so 4K falls back to the
   SSim chain) when `anime_detect.lua` classifies the file as anime
@@ -47,8 +51,8 @@ Keybindings: `n` re-sync, `Ctrl+N` sync menu, `F12` clear episode cache,
   animation like Pixar/Arcane stays off the Anime4K path), or it plays
   from an `/Anime/` folder.
 - **SmartSkip** (from [awesome-mpv](https://github.com/stax76/awesome-mpv)):
-  auto-skips Opening/Ending/Preview chapters after a 3s cancelable
-  countdown; silence-based skip (`?`) for unchaptered files.
+  auto-skips Opening/Ending/Preview chapters immediately (no countdown);
+  silence-based skip (`?`) for unchaptered files.
 
 ## Install
 
@@ -105,7 +109,7 @@ Keys are **intentionally not committed**. Copy `.env.example` to `.env` and fill
 (see `ar_subs.conf.example` for every option, including the offline
 index URL and the sync-engine tuning). Non-empty values there override
 `.env` -- keep the keys themselves in `.env`. `anime_detect.lua` reads
-`TMDB_API_KEY` straight from the environment.
+`TMDB_API_KEY` from conf → env → `~~/.env`. Never log the raw key.
 
 ## State
 
@@ -122,8 +126,11 @@ All regenerable state lives under one root -- delete it for a clean start
 ## Dynamic crop
 
 Dynamic crop uses the native C++ sidecar in `cuda-crop-cpp/` (ffprobe + ffmpeg
-`cropdetect` — no Python). The installer tries to build it automatically; if it
-can't, build manually. Requires CMake, a C++17 compiler, `nlohmann_json`, and
+`cropdetect` — no Python). Two consecutive CUDA scan failures fall back to
+legacy lavfi cropdetect (`nvdec-copy` while that runs); the next file retries
+CUDA. Pin `mpv_socket=/tmp/mpvsocket` so other IPC clients keep that path.
+The installer tries to build the sidecar automatically; if it can't, build
+manually. Requires CMake, a C++17 compiler, `nlohmann_json`, and
 ffprobe/ffmpeg at runtime.
 
 Linux / macOS:
