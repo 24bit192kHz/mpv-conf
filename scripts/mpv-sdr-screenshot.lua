@@ -2,14 +2,12 @@ local mp = require "mp"
 local utils = require "mp.utils"
 
 local render_options = {
-    "target-prim",
-    "target-trc",
-    "target-gamut",
-    "target-peak",
+    -- NOTE: only these take effect for "video" screenshots. target-prim,
+    -- target-trc, target-peak, target-gamut and target-colorspace-hint are
+    -- ignored there (vo_gpu_next renders "video" to a hardcoded sRGB
+    -- target); they used to be set+restored here to no effect.
     "tone-mapping",
     "gamut-mapping-mode",
-    "target-colorspace-hint",
-    "target-colorspace-hint-mode",
     "screenshot-tag-colorspace",
     "screenshot-high-bit-depth",
     "blend-subtitles",
@@ -46,14 +44,10 @@ local function screenshot()
     end
 
     -- Render this frame into an SDR/sRGB target before writing the PNG.
-    mp.set_property("target-prim", "bt.709")
-    mp.set_property("target-trc", "bt.1886")
-    mp.set_property("target-gamut", "bt.709")
-    mp.set_property("target-peak", "100")
+    -- ("video" screenshots always map to sRGB; these two do the HDR->SDR
+    -- work. Peak comes from the screenshot path's single-frame detection.)
     mp.set_property("tone-mapping", "bt.2446a")
     mp.set_property("gamut-mapping-mode", "perceptual")
-    mp.set_property("target-colorspace-hint", "yes")
-    mp.set_property("target-colorspace-hint-mode", "target")
     mp.set_property("screenshot-tag-colorspace", "no")
     mp.set_property("screenshot-high-bit-depth", "no")
     -- blend-subtitles=video burns ASS into the video plane; disable for a
