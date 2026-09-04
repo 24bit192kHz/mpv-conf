@@ -265,6 +265,27 @@ local function probe(raw_title, gen, ja_audio)
       mp.set_property("user-data/anime_detect/is_anime", "0")
       return
     end
+    local function has_genre(r)
+      for _, gid in ipairs(r.genre_ids or {}) do
+        if genres[gid] then return true end
+      end
+      return false
+    end
+    -- The first hit can be a namesake ("Egghead Republic" for an "Egghead"
+    -- arc-only query): prefer a genre-matching candidate anywhere in the
+    -- list, ideally Japanese, before settling on the first tv/movie.
+    if not has_genre(best) then
+      for _, r in ipairs(j.results) do
+        if (r.media_type == "tv" or r.media_type == "movie")
+          and type(r.genre_ids) == "table"
+          and (r.vote_average or 0) >= cfg.min_score
+          and has_genre(r)
+          and (r.original_language == "ja" or ja_audio) then
+          best = r
+          break
+        end
+      end
+    end
     local function finalize(is_anime, lang)
       cache[norm] = is_anime
       mp.set_property("user-data/anime_detect/is_anime", is_anime and "1" or "0")

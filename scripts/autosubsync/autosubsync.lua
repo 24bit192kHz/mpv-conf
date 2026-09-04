@@ -375,7 +375,11 @@ local function get_loaded_tracks(track_type)
 end
 
 local function get_active_track(track_type)
-    local track_list = mp.get_property_native('track-list')
+    -- Teardown (end-file fired, tracks torn down, async completions still
+    -- landing): a missing track is expected, not an error worth triple-
+    -- logging on every killed-subprocess callback.
+    if shutting_down then return nil end
+    local track_list = mp.get_property_native('track-list') or {}
     for num, track in ipairs(track_list) do
         if track.type == track_type and track.selected == true then
             if track.external and not h.file_exists(track['external-filename']) then

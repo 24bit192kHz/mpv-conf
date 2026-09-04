@@ -2067,6 +2067,10 @@ local function load_api_candidate(media, video_name, subscene_id)
     }, subscene_id)
     if not tmp then return nil end
 
+    -- The temp file can vanish between fetch and persist (a concurrent
+    -- attempt cleaning its own failed download, a /tmp reaper): verify
+    -- before cp so a missing source is a quiet skip, not an error.
+    if not utils.file_info(tmp) then return nil end
     -- A candidate can resolve to an off-site link stub instead of subtitle
     -- data; refuse to persist it so the cache never holds a placeholder (and
     -- the caller can step down to the next candidate).
