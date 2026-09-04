@@ -93,6 +93,8 @@ local SCENE_TOKENS = {
   "avc", "av1", "10bit", "8bit", "flac", "opus", "aac", "eac3", "ac3",
   "dts", "atmos", "truehd", "dual", "audio", "proper", "repack",
   "amzn", "nf", "hulu", "dsnp",
+  -- distributor/source tags (CR=Crunchyroll) and sub/dub markers
+  "cr", "dl", "multi", "msubs", "dub", "sub",
 }
 
 local function normalize(s)
@@ -100,17 +102,14 @@ local function normalize(s)
   s = s:gsub("^%[[^%]]*%]%s*", "")
   s = s:gsub("%[[^%]]*%]", " ")
   s = s:gsub("%b()", " ")
-  -- scene-style codec/source-group compounds (h265-cakes, x264-ntb, 2160p-grp)
   for _, c in ipairs(SCENE_COMPOUNDS) do
     s = s:gsub(c .. "%-[a-z0-9]+", " ")
   end
   -- resolution (Lua patterns have no {n,m}: %d{3,4}p matched literally, so
   -- unbracketed 1080p/2160p used to leak into the TMDB query)
   s = s:gsub("%d%d%d%d?p", " ")
-  -- common scene/release tokens
-  for _, tok in ipairs(SCENE_TOKENS) do
-    s = s:gsub("%f[%w]" .. tok .. "%f[%W]", " ")
-  end
+  -- bare codec numbers ("H.264" -> "h 264"): whole-word 3-digit runs
+  s = s:gsub("%f[%w]%d%d%d%f[%W]", " ")
   -- strip episode markers: S01E12, S01xE12, E12, etc.
   s = s:gsub("[%s%-_]*s?%d?%d[xXeE]%d+[%s%-_]*", " ")
   -- strip version suffix like "v2" on episodes: "S01E03v2" tail or standalone "v2"
@@ -141,6 +140,10 @@ local function curl_json(url, cb)
   local args = {"curl", "-fsSL", "-A", "mpv-anime_detect", "--max-time", "8", url}
   mp.command_native_async({
     name = "subprocess",
+    -- A 2KB JSON probe must survive EOF/teardown: the default
+    -- playback_only=true gets killed on fast/headless exits and the
+    -- generation guard already drops stale callbacks.
+    playback_only = false,
     args = args,
     capture_stdout = true,
     capture_stderr = false,
@@ -170,6 +173,22 @@ local function has_japanese_audio()
     end
   end
   return false
+end
+
+-- Series name left of an episode marker: scene names bury the series
+-- ("Solo.Leveling.S02E02.I.Suppose...", "Lain E07 Society ..."); the
+-- episode title + release junk right of the marker makes TMDB return
+-- zero results. Returns nil when there is no marker to cut at.
+local function series_cut(s)
+  local left = s:match("^(.-)[%s%.%-_]+[sS]%d%d?%d?[xXeE]%d+")
+    or s:match("^(.-)[%s%.%-_]+%d+[xX]%d+")
+    or s:match("^(.-)[%s%.%-_]+[eE]%d+")
+    or s:match("^(.-)[%s%.%-_]+[sS]%d%d?%d?%s*$")
+  if left then
+    left = left:match("^%s*(.-)%s*$")
+    if left and #left >= 3 then return left end
+  end
+  return nil
 end
 
 local function probe(raw_title, gen, ja_audio)
@@ -206,6 +225,21 @@ local function probe(raw_title, gen, ja_audio)
           if gen == probe_gen then probe(raw_title, gen, ja_audio) end
         end)
         return
+      end
+      if j and j.results and #j.results == 0 then
+        -- Genuine empty result with a cuttable series name: the episode
+        -- title + release junk right of the marker sank the query.
+        -- Retry once on the series cut (own cache key, own inflight).
+        local cut = series_cut(raw_title)
+        if cut then
+          local cnorm = normalize(cut)
+          if cnorm ~= "" and cnorm ~= norm
+            and cache[cnorm] == nil and not inflight[cnorm] then
+            log("no match; retrying series cut", cnorm)
+            probe(cut, gen, ja_audio)
+            return
+          end
+        end
       end
       if not j then
         mp.msg.warn("anime_detect: TMDB unreachable; anime detection skipped for this file")
