@@ -1,0 +1,12 @@
+# mpv-sdr-screenshot options (copy to mpv-sdr-screenshot.conf to use).
+#
+# HDR->SDR curve for the `s` capture. Measured on Blue Eye Samurai S01E01
+# (DV, night interior), same frame, script path:
+#   bt.2446a  mean 0.1205, 0.1% black-clip  (default: brightest, no crush)
+#   hable     mean 0.1184, 0.1% black-clip  (near-twin of 2446a)
+#   bt.2390   mean 0.0841, 11% black-clip   (crushes shadows)
+#   mobius    mean 0.0759, 21% black-clip   (crushes harder)
+# tone-mapping-param does nothing for bt.2446a (measured 0.5/1.0/2.0
+# pixel-identical). "video" screenshots always map to sRGB; target-*
+# display options do not apply to the capture.
+tone_mapping=bt.2446a

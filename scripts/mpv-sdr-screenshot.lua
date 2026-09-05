@@ -1,6 +1,13 @@
 local mp = require "mp"
 local utils = require "mp.utils"
+local options = require "mp.options"
 
+local opts = {
+    -- HDR->SDR curve for the capture. bt.2446a is the dim-but-faithful
+    -- reference trim; mobius/bt.2390 render punchier frames.
+    tone_mapping = "bt.2446a",
+}
+options.read_options(opts, "mpv-sdr-screenshot")
 local render_options = {
     -- NOTE: only these take effect for "video" screenshots. target-prim,
     -- target-trc, target-peak, target-gamut and target-colorspace-hint are
@@ -46,7 +53,7 @@ local function screenshot()
     -- Render this frame into an SDR/sRGB target before writing the PNG.
     -- ("video" screenshots always map to sRGB; these two do the HDR->SDR
     -- work. Peak comes from the screenshot path's single-frame detection.)
-    mp.set_property("tone-mapping", "bt.2446a")
+    mp.set_property("tone-mapping", opts.tone_mapping)
     mp.set_property("gamut-mapping-mode", "perceptual")
     mp.set_property("screenshot-tag-colorspace", "no")
     mp.set_property("screenshot-high-bit-depth", "no")
