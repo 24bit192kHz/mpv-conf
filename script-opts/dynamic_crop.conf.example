@@ -11,9 +11,11 @@ binary=~~/cuda-crop-cpp/build/cuda-crop-cpp
 daemon_idle_timeout=10.0
 legacy_script=~~/script-modules/dynamic-crop-legacy.lua
 fallback_failures=2
-# video-crop + panscan; blend-subtitles=video scales subtitles with the picture.
-# transform (video-zoom) leaves ASS/SRT on the unzoomed plane.
-apply_mode=panscan
+# transform (video-zoom + video-pan) scales the whole rendered picture, so
+# video AND subtitles stay pixel-locked across cuts. video-crop rescales
+# only the video plane and leaves the subtitle plane behind, so subs drift
+# between aspects (measured 92.7% vs 95.2% window height on one line).
+apply_mode=transform
 panscan_letterbox=1.0
 panscan_full=0.0
 panscan_target_aspect=1.8
