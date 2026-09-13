@@ -198,14 +198,19 @@ local function apply_transform(zoom, pan_x, pan_y)
     mp.set_property_number("video-zoom", zoom)
 end
 
--- blend-subtitles=video makes subtitles follow the video scaler/panscan.
--- Removing encoded letterbox rows with video-crop changes the subtitle
--- canvas, though: the default sub-pos=100 can land below the cropped frame.
--- Preserve the user's layout and only clamp its vertical position while a
--- crop is active. Do not change sub-scale; video mode scales it automatically.
+-- blend-subtitles=video keeps subtitles inside the visible video frame and
+-- scales them with the picture; sub-pos stays % of window height, so leaving
+-- the layout alone pins subs to the same screen place across crops. Per-crop
+-- sub-pos/margin rewrites made subs bounce on every AR switch (IMAX-style
+-- content), so crops never touch subtitle properties. restore_sub_layout
+-- only undoes a rewrite saved by an older version, then goes quiet.
 local saved_sub_layout = nil
 
 local function restore_sub_layout()
+    -- Migration shim: versions before the pinned-sub change rewrote
+    -- sub-pos/use-margins/ass-force-margins per crop and saved the user
+    -- layout here. Restore once if such a save exists, then never again;
+    -- this script no longer captures or rewrites subtitle layout.
     local s = saved_sub_layout
     if not s then return end
     if s.pos ~= nil then mp.set_property_number("sub-pos", s.pos) end
@@ -215,12 +220,9 @@ local function restore_sub_layout()
 end
 
 local function capture_sub_layout()
-    if saved_sub_layout then return end
-    saved_sub_layout = {
-        pos = mp.get_property_number("sub-pos") or 100,
-        use_margins = mp.get_property_native("sub-use-margins"),
-        ass_force_margins = mp.get_property_native("sub-ass-force-margins"),
-    }
+    -- Disabled: crops leave subtitle layout pinned (see note above).
+    -- Kept so old call sites stay valid; does nothing by design.
+    return
 end
 
 local function reset_render_state()
@@ -453,22 +455,12 @@ local function video_crop_rect(crop)
 end
 
 local function apply_subtitle_crop(crop)
-    capture_sub_layout()
-    mp.set_property_native("sub-use-margins", false)
-    mp.set_property_native("sub-ass-force-margins", false)
-
-    local _w, h, _x, y = crop_parts(crop)
-    local _sw, sh = source_dimensions(crop)
-    if not h or not y or not sh or sh <= 0 then return end
-
-    -- sub-pos is expressed against the uncropped video canvas. Keep a
-    -- bottom-aligned subtitle inside the new canvas, with a small safety
-    -- allowance for glyph descent. User positions above the crop remain up.
-    local crop_bottom = 100 * (y + h) / sh
-    mp.set_property_number(
-        "sub-pos",
-        math.min(saved_sub_layout.pos, crop_bottom + 1.0)
-    )
+    -- Disabled: blend-subtitles=video pins subs to one screen place while
+    -- crops change. Per-crop sub-pos rewrites caused visible bouncing.
+    -- The crop argument is ignored; restore_sub_layout() above handles the
+    -- one-time migration of layouts saved by older versions.
+    _ = crop
+    return
 end
 
 local function round_nearest(value, unit)
