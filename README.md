@@ -118,10 +118,25 @@ All regenerable state lives under one root -- delete it for a clean start
 
 ```
 ~/.cache/mpv/
-├── ar_subs/       subtitle store (.zst), search db, hot files
-├── autosubsync/   extracted refs (.zst), transforms, slow-show marks
-└── memo/          playback history
+├── ar_subs/        subtitle store (.zst), search db, hot files
+├── autosubsync/    extracted refs (.zst), transforms, slow-show marks
+├── memo/           playback history
+└── no-index-seek/  cue-less MKV timestamp indexes (*.idx)
 ```
+
+Out-of-tree state (not under `~/.cache/mpv/`, same delete-to-reset rule):
+
+- `scripts/autochapters/anime.json` (~7.7M manami offline DB) +
+  `scripts/autochapters/relations.json` (~58K) -- auto-downloaded on
+  first run.
+- `~/.config/mpv/chapters/*.ffmetadata` -- SmartSkip global chapters
+  (`global_chapters_path=/:dir%mpvconf%/chapters`, hashed per video).
+- `scripts/sponsorblock_shared/sponsorblock.txt` -- SponsorBlock user ID
+  (`sponsorblock.db` only with `local_database=yes`).
+- `/tmp/mpv_noidx_*.idx` -- legacy no-index-seek indexes, only when
+  `index_dir=/tmp` is set; default is the cache path above.
+- clipshot screenshots are transient (`$XDG_RUNTIME_DIR` or `/tmp`,
+  PID+sequence unique per capture, removed after wl-copy/xclip).
 
 ## Dynamic crop
 

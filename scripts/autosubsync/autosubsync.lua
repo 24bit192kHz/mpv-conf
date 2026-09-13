@@ -285,6 +285,90 @@ local function transform_plausible(offset, scale)
     return true
 end
 
+-- Argos hard ceiling: a wrong-episode lock measured at +425.94s/1.043 would
+-- still pass the generic 600s*0.9 gate, so the timing-ref path gets its own
+-- tighter cap (a real recap shift is ~+120s at scale ~1).
+local ARGOS_MAX_OFFSET = 400
+
+-- Shared tail scan for the Argos callback (the ffsubsync branch keeps its own
+-- closure-bound copy over retimed_subtitle_path; this one takes a path so the
+-- async timing-ref completion can gate its output file the same way).
+local function timing_ref_file_stats(path, limit)
+    local maxt, n, past = 0, 0, 0
+    local f = io.open(path, "r")
+    if not f then return nil, 0, 0 end
+    for line in f:lines() do
+        local h, m, s, frac
+        if line:sub(1, 9) == "Dialogue:" then
+            local rest = line:sub(10)
+            local c = rest:find(",", 1, true)
+            if c then
+                local r2 = rest:sub(c + 1)
+                local c2 = r2:find(",", 1, true)
+                if c2 then
+                    h, m, s, frac = r2:sub(c2 + 1):match("^(%d+):(%d+):(%d+)%.(%d+)")
+                    if frac then frac = frac / 100 end
+                end
+            end
+        else
+            h, m, s, frac = line:match("(%d%d):(%d%d):(%d%d)[,%.](%d%d%d)")
+            if frac then frac = frac / 1000 end
+        end
+        if h then
+            local t = tonumber(h) * 3600 + tonumber(m) * 60 + tonumber(s) + frac
+            n = n + 1
+            if t > maxt then maxt = t end
+            if limit and t > limit then past = past + 1 end
+        end
+    end
+    f:close()
+    return maxt, n, past
+end
+
+-- Same tail-past-EOF rule as implausible_alignment: a correct global
+-- transform keeps (nearly) every cue inside the media; reject when the tail
+-- runs far past the end AND a substantial fraction of cues is past it.
+local function timing_ref_implausible(path)
+    local dur = prop_number("duration", 0)
+    if dur <= 0 then return false end
+    local maxt, n, past = timing_ref_file_stats(path, dur + 5)
+    if not maxt or n < 10 then return false end
+    return maxt > dur + 30 and past / n > 0.15
+end
+
+-- Pull implied offset/scale out of the timing-ref report: prefer the sidecar
+-- JSON (<out>.json in compare mode), fall back to the stdout JSON blob that
+-- retime() always prints. Returns offset, scale, report-table (or nils).
+local function timing_ref_report_metrics(report_path, stdout_blob)
+    local function extract(t)
+        if type(t) ~= "table" then return nil, nil end
+        local a = t.argos
+        if type(a) == "table" then
+            return tonumber(a.implied_offset), tonumber(a.implied_scale or 1)
+        end
+        return tonumber(t.implied_offset), tonumber(t.implied_scale or 1)
+    end
+    if report_path then
+        local f = io.open(report_path, "r")
+        if f then
+            local raw = f:read("*a"); f:close()
+            local t = utils.parse_json(raw)
+            if type(t) == "table" then
+                local off, sc = extract(t)
+                if off then return off, sc, t end
+            end
+        end
+    end
+    if stdout_blob and stdout_blob ~= "" then
+        local t = utils.parse_json(stdout_blob)
+        if type(t) == "table" then
+            local off, sc = extract(t)
+            if off then return off, sc, t end
+        end
+    end
+    return nil, nil, nil
+end
+
 local function load_show_transform()
     if not config.cache_show_transform then return nil end
     local path = TRANSFORM_DIR .. "/" .. episode_key() .. ".json"
@@ -916,7 +1000,13 @@ local function sync_to_manual_offset()
     if parser == nil then
         return notify(string.format("Error: unsupported codec: %s", track['codec']), "error", 3)
     end
-    local s = parser:populate(file_path)
+    local ok_pop, s, perr = pcall(function() return parser:populate(file_path) end)
+    if not ok_pop then
+        return notify(string.format("Couldn't parse subtitle (%s).", tostring(s)), "error", 5)
+    end
+    if s == nil then
+        return notify(string.format("Couldn't parse subtitle: %s", tostring(perr or "unknown error")), "error", 5)
+    end
     s:shift_timing(sub_delay)
     if track.external == false then
         os.remove(file_path)
@@ -1487,6 +1577,7 @@ local function sync_via_timing_ref()
         table.insert(cmd, "--report")
         table.insert(cmd, out .. ".json")
     end
+    local report_path = (mode == "compare") and (out .. ".json") or nil
     -- ASR/Argos can take minutes; do not freeze playback or fall through to
     -- the 900s audio-VAD path. Return true so on-load skips ffsubsync.
     mp.command_native_async({
@@ -1513,6 +1604,31 @@ local function sync_via_timing_ref()
         end
         if ret.stdout and ret.stdout ~= "" then
             mp.msg.info("timing_ref: " .. ret.stdout:sub(1, 800))
+        end
+        -- Same gates as the ffsubsync path: the report's implied offset/scale
+        -- must be plausible (Argos gets the tighter 400s ceiling -- a
+        -- wrong-episode +425s lock is exit-code-0 garbage), and the retimed
+        -- tail must not run far past EOF. Reject to the audio rescue instead
+        -- of loading a shifted file.
+        local bad, why
+        local rpt_off, rpt_scale = timing_ref_report_metrics(report_path, ret.stdout)
+        if rpt_off == nil then
+            bad, why = true, "no offset in timing-ref report"
+        elseif not transform_plausible(rpt_off, rpt_scale or 1) then
+            bad, why = true, string.format("implausible transform (offset %+.2fs, scale %.4f)",
+                rpt_off, rpt_scale or 1)
+        elseif math.abs(rpt_off) > ARGOS_MAX_OFFSET then
+            bad, why = true, string.format("argos offset %+.2fs exceeds %ds ceiling",
+                rpt_off, ARGOS_MAX_OFFSET)
+        elseif timing_ref_implausible(out) then
+            bad, why = true, "retimed cues run past end of media"
+        end
+        if bad then
+            mp.msg.warn("timing_ref rejected: " .. (why or "unknown"))
+            notify("Argos timing-ref implausible (" .. (why or "unknown") .. "); falling back to ffsubsync...", "warn", 5)
+            pcall(os.remove, out)
+            if sync_via_ffsubsync then sync_via_ffsubsync() end
+            return
         end
         local old_sid = mp.get_property("sid")
         if mp.commandv("sub_add", out) then

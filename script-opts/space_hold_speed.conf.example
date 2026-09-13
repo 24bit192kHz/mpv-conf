@@ -1,0 +1,11 @@
+# space-hold-speed.lua options (identifier: space_hold_speed).
+# Copy to space_hold_speed.conf to override.
+# hold_threshold: seconds SPACE must be held before speedup kicks in.
+# speed_factor: target speed while held (tap still toggles pause).
+# speed_ramp=yes: climb gradually (ramp_step every ramp_interval) instead
+# of jumping straight to speed_factor (evafast-style).
+hold_threshold=0.25
+speed_factor=2.0
+speed_ramp=no
+ramp_step=0.2
+ramp_interval=0.05

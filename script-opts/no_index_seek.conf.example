@@ -1,0 +1,7 @@
+# no-index-seek.lua options (identifier: no_index_seek).
+# Copy to no_index_seek.conf to override.
+# Empty index_dir = ~/.cache/mpv/no-index-seek (XDG_CACHE_HOME-aware).
+# Set an explicit dir only to relocate the cue-less MKV *.idx sidecars.
+speed=100
+index_dir=
+record_every=20

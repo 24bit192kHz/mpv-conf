@@ -67,9 +67,16 @@ local config = _cfg.opts
 local CACHE_DIR = (os.getenv("XDG_CACHE_HOME") or (os.getenv("HOME") or "/tmp") .. "/.cache") .. "/mpv/ar_subs"
 local CACHE_FILE = CACHE_DIR .. "/cache.json"
 local SUBS_DIR = CACHE_DIR .. "/subtitles"
-local SUBDL_API_KEY = trim(config.subdl_api_key) ~= "" and config.subdl_api_key or env_config.subdl_api_key
-local SUBDL_API_BACKUP_KEY = trim(config.subdl_api_backup_key) ~= "" and config.subdl_api_backup_key or env_config.subdl_api_backup_key
-local TMDB_API_KEY = trim(config.tmdb_api_key) ~= "" and config.tmdb_api_key or env_config.tmdb_api_key
+-- Keys are trim-checked AND stored trimmed: a conf value with stray padding
+-- would otherwise pass the non-empty check but fail Bearer auth (401).
+local function pick_key(conf_val, env_val)
+    local c = trim(conf_val)
+    if c ~= "" then return c end
+    return trim(env_val)
+end
+local SUBDL_API_KEY = pick_key(config.subdl_api_key, env_config.subdl_api_key)
+local SUBDL_API_BACKUP_KEY = pick_key(config.subdl_api_backup_key, env_config.subdl_api_backup_key)
+local TMDB_API_KEY = pick_key(config.tmdb_api_key, env_config.tmdb_api_key)
 -- FIX 1: Remove trailing spaces from API URLs
 local SUBDL_API_URL = "https://api.subdl.com/api/v2/subtitles/search"
 local TMDB_API_URL = "https://api.themoviedb.org/3"
@@ -1877,13 +1884,16 @@ end
 local function has_sibling_sub()
     local path = mp.get_property("path")
     if not path then return false end
-    local stem = (basename(path):match("(.+)%.%w+$") or ""):lower()
+    -- basename() already strips the extension, so compare its stem directly.
+    -- A second strip would reduce Show.S01E01 to show (never matching
+    -- show.s01e01) and reduce a single-token movie stem to empty.
+    local stem = (basename(path) or ""):lower()
     if stem == "" then return false end
     -- Track-list check (a matching external Arabic sub already loaded).
     for _, t in ipairs(mp.get_property_native("track-list") or {}) do
         if t.type == "sub" and t.external then
             local fn = t["external-filename"] or ""
-            local sub_stem = (basename(fn):match("(.+)%.%w+$") or ""):lower()
+            local sub_stem = (basename(fn) or ""):lower()
             if sub_stem ~= "" and sub_stem == stem and looks_arabic(fn, t.lang) then
                 return true
             end
@@ -2294,11 +2304,17 @@ local function enhanced_auto_fetch_if_needed()
     end
     
     -- Offline Subscene index: zero-quota local hit before any API search.
+    -- try_local_db blocks on the subtitle-api (10s); the file can change
+    -- mid-call, so guard with the waterfall-entry path like
+    -- download_and_load/fetch_bulk_subs do -- never load A's sub onto B.
     if not has_arabic_sub() then
         local local_sub = try_local_db(media, video_name)
         if local_sub then
-            local vpath = mp.get_property("path")
-            activation_util.activate(mp, local_sub, vpath, CACHE_TO_MEDIA_DIR)
+            if not still_same_path(path) then
+                mp.msg.info("ar_subs: discarding local-index hit, file changed")
+                return
+            end
+            activation_util.activate(mp, local_sub, path, CACHE_TO_MEDIA_DIR)
             mp.msg.info("ar_subs: loaded subtitle from local index", local_sub)
             mp.osd_message("Loaded local DB subtitle", 2)
             return
@@ -2306,10 +2322,15 @@ local function enhanced_auto_fetch_if_needed()
     end
 
     -- SubSource.net: second source (after the offline index, before SubDL).
+    -- try_subsource blocks up to ~60s across packs; same guard as above.
     if not has_arabic_sub() then
         local ss_sub = try_subsource(media, video_name)
         if ss_sub then
-            activation_util.activate(mp, ss_sub, mp.get_property("path"), CACHE_TO_MEDIA_DIR)
+            if not still_same_path(path) then
+                mp.msg.info("ar_subs: discarding SubSource hit, file changed")
+                return
+            end
+            activation_util.activate(mp, ss_sub, path, CACHE_TO_MEDIA_DIR)
             mp.osd_message("Loaded SubSource subtitle", 2)
             return
         end

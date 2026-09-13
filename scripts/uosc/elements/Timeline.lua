@@ -27,8 +27,13 @@ function Timeline:init()
 	self:register_mp_event('file-loaded', function()
 		self.heatmap = load_youtube_heatmap()
 	end)
-	-- Release any dragging and clear heatmap when file gets unloaded
+	-- Release any dragging and clear heatmap when file gets unloaded.
+	-- [local patch] restore the pre-drag pause state: the bare clear left the
+	-- forced pause=true from handle_cursor_down behind, so a scrub across
+	-- end-of-file stuck the next file paused. handle_cursor_up already
+	-- restores it; main.lua's pause-no only covers autoload/shuffle resume.
 	self:register_mp_event('end-file', function()
+		if self.pressed then mp.set_property_native('pause', self.pressed.pause) end
 		self.pressed = false
 		self.heatmap = nil
 	end)

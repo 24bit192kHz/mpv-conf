@@ -147,6 +147,9 @@ local function hot_lru()
     for name in h:lines() do
         if name:find("_retimed", 1, true) then
             -- never evict retimed files (transform cache references them)
+        elseif name:sub(-4) == ".src" then
+            -- source-identity sidecars are owned by their hot file, not
+            -- independent entries: never count or evict them on their own.
         else
             kept = kept + 1
             if kept > HOT_CAP then victims[#victims + 1] = name end
@@ -155,6 +158,7 @@ local function hot_lru()
     h:close()
     for _, name in ipairs(victims) do
         os.remove(M.hot_dir() .. "/" .. name)
+        os.remove(M.hot_dir() .. "/" .. name .. ".src")
     end
 end
 
@@ -166,22 +170,90 @@ local function djb2_hex(s)
     return string.format("%08x", h)
 end
 
+-- file_info for staleness checks: prefer the injected mp handle, else the
+-- mpv utils module (stubbed in tests). Returns nil outside mpv.
+local function file_info_of(p)
+    local mu = M._mp and M._mp.utils
+    if mu and mu.file_info then
+        local ok, info = pcall(mu.file_info, p)
+        if ok and type(info) == "table" then return info end
+    end
+    local ok_req, utils = pcall(require, "mp.utils")
+    if ok_req and utils and utils.file_info then
+        local ok, info = pcall(utils.file_info, p)
+        if ok and type(info) == "table" then return info end
+    end
+    return nil
+end
+
+local function touch(path)
+    local t = io.open(path, "ab"); if t then t:close() end -- LRU touch
+end
+
 -- Path mpv should load: decompresses .zst into the hot dir on first use,
 -- returns plain paths unchanged. Touches the hot file so LRU keeps it.
 -- Hot names include a parent-dir hash so two shows' "Arabic.ass.zst" never
 -- share one decompressed file.
+-- A hot file is trusted only when it still matches its source: safe_copy +
+-- archive_in_place overwrite the .zst on refresh, and an existence-only check
+-- would serve stale bytes. Compare the cheap identity first (mtime + size,
+-- same as autosubsync's path|size|mtime cache key); fall back to a content
+-- hash of the .zst bytes when mtime/size are unavailable. On mismatch,
+-- re-decompress and overwrite the hot file.
 M.ensure = function(path)
     if type(path) ~= "string" or not M.is_compressed(path) then return path end
     local dir = path:match("(.+)/[^/]+$") or ""
     local base = path:match("([^/]+)$"):sub(1, -5)
     local out = M.hot_dir() .. "/" .. djb2_hex(dir) .. "_" .. base
-    local f = io.open(out, "rb")
-    if f then
-        f:close()
-        local t = io.open(out, "ab"); if t then t:close() end -- LRU touch
+
+    local function fingerprint(p)
+        local f = io.open(p, "rb")
+        if not f then return nil end
+        local data = f:read("*a"); f:close()
+        if not data then return nil end
+        return data
+    end
+
+    local function hot_matches_source()
+        local info = file_info_of(path)
+        local hot_info = file_info_of(out)
+        if not hot_info then return false end -- no hot file at all
+        if info then
+            -- size is reliable everywhere mpv runs; mtime may be absent in
+            -- stubs, so compare each side only when both sides carry it.
+            if info.size ~= nil and hot_info.size == nil then return false end
+            if hot_info.size ~= nil and info.size == nil then return false end
+            if info.size ~= nil and hot_info.size ~= nil
+               and info.size ~= hot_info.size then
+                return false
+            end
+            if info.mtime ~= nil and hot_info.mtime ~= nil
+               and info.mtime ~= hot_info.mtime then
+                return false
+            end
+            if info.size ~= nil or info.mtime ~= nil then return true end
+        end
+        -- No usable stat identity: compare a content hash of the .zst bytes
+        -- recorded alongside the hot file against the current .zst.
+        local hash_path = out .. ".src"
+        local hf = io.open(hash_path, "rb")
+        local recorded = hf and hf:read("*a"); if hf then hf:close() end
+        local current = fingerprint(path)
+        if not current or not recorded then return false end
+        return djb2_hex(current) == recorded
+    end
+
+    if hot_matches_source() then
+        touch(out)
         return out
     end
     if M.decompress_file(path, out) then
+        -- Record the source hash for runtimes without stat identity.
+        local current = fingerprint(path)
+        if current then
+            local hf = io.open(out .. ".src", "wb")
+            if hf then hf:write(djb2_hex(current)); hf:close() end
+        end
         hot_lru()
         return out
     end

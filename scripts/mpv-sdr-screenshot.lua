@@ -23,6 +23,14 @@ local render_options = {
 local busy = false
 local sequence = 0
 local clipboard_command
+-- Generation token + file identity: bumped on every new shot and on
+-- file-loaded/end-file so a pending finish()/restore() from file A can
+-- never reapply A's tone-mapping/gamut/blend onto file B's
+-- conditional-profile values (e.g. sdr-native clip vs hdr-passthrough
+-- st2094-40) when s is followed by playlist-next inside the
+-- 0.1s + 30x0.05s finish window.
+local shot_gen = 0
+local active_temp = nil
 
 local function safe_name(value)
     value = (value or "mpv-screenshot"):gsub("[^%w%._%-]+", "_")
@@ -44,6 +52,11 @@ local function screenshot()
     end
     busy = true
     sequence = sequence + 1
+    -- Capture generation + file identity before touching properties so a
+    -- pending finish()/restore() can prove it still owns the current file.
+    shot_gen = shot_gen + 1
+    local gen = shot_gen
+    local src_path = mp.get_property("path", "")
 
     local saved = {}
     for _, name in ipairs(render_options) do
@@ -68,31 +81,67 @@ local function screenshot()
     local stamp = timecode(mp.get_property_number("time-pos", 0))
     local final_path = string.format("%s/%s [%s]-%03d.png", directory, stem, stamp, sequence)
     local temp_path = final_path .. ".tmp.png"
+    active_temp = temp_path
+
+    local function is_current()
+        return gen == shot_gen and mp.get_property("path", "") == src_path
+    end
 
     local function restore()
+        -- Stale shot (file-loaded/end-file bumped shot_gen, or playlist
+        -- moved to a new path): never reapply file A's saved
+        -- tone-mapping/gamut/blend onto file B's conditional-profile
+        -- values (sdr-native clip vs hdr-passthrough st2094-40).
+        if not is_current() then
+            return false
+        end
         for name, value in pairs(saved) do
             if value ~= nil then pcall(mp.set_property, name, value) end
         end
+        return true
     end
 
     local ok = pcall(function()
         mp.command_native({"screenshot-to-file", temp_path, "video"})
     end)
     if not ok then
+        if active_temp == temp_path then
+            active_temp = nil
+        end
+        -- Guarded: no-op when stale so we never clobber the new file.
         restore()
-        busy = false
-        mp.osd_message("SDR screenshot failed", 2.5)
+        -- Only clear busy when we still own it; a newer shot (higher gen)
+        -- started after us keeps its own busy=true.
+        if gen == shot_gen then
+            busy = false
+        end
+        -- Only OSD when still on the source file; otherwise the message
+        -- would pop over the next playlist entry.
+        if is_current() then
+            mp.osd_message("SDR screenshot failed", 2.5)
+        end
         return
     end
 
     local attempts = 0
     local function finish()
+        -- Cancel path: s then playlist-next inside the 0.1s + 30x0.05s
+        -- window. Drop the stale temp, leave the new file's properties
+        -- and busy flag alone (a newer shot owns them now, or the
+        -- file-loaded/end-file handler already cleared busy).
+        if gen ~= shot_gen or mp.get_property("path", "") ~= src_path then
+            pcall(os.remove, temp_path)
+            return
+        end
         local file = io.open(temp_path, "rb")
         if not file then
             attempts = attempts + 1
             if attempts < 30 then
                 mp.add_timeout(0.05, finish)
                 return
+            end
+            if active_temp == temp_path then
+                active_temp = nil
             end
             restore()
             busy = false
@@ -102,6 +151,9 @@ local function screenshot()
 
         file:close()
         os.rename(temp_path, final_path)
+        if active_temp == temp_path then
+            active_temp = nil
+        end
         restore()
 
         clipboard_command = mp.command_native_async({
@@ -116,5 +168,22 @@ local function screenshot()
 
     mp.add_timeout(0.1, finish)
 end
+
+local function cancel_pending()
+    -- A new file (or no file) invalidates every pending finish()/restore():
+    -- bump the generation so stale closures drop out, best-effort remove
+    -- the stale temp, and free busy so the new file can screenshot at once.
+    -- Stale finish() closures return early and never touch busy/properties,
+    -- so clearing here cannot race a newer shot (which starts after us).
+    shot_gen = shot_gen + 1
+    if active_temp then
+        pcall(os.remove, active_temp)
+        active_temp = nil
+    end
+    busy = false
+end
+
+mp.register_event("file-loaded", cancel_pending)
+mp.register_event("end-file", cancel_pending)
 
 mp.add_forced_key_binding("s", "mpv-sdr-screenshot", screenshot)

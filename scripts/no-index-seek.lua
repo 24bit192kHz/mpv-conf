@@ -7,13 +7,14 @@
 
 local mp    = require 'mp'
 local msg   = require 'mp.msg'
+local utils = require 'mp.utils'
 
 --------------------------------------------------------------------
 -- Config (override via script-opts=no_index_seek-speed=50 etc.)
 --------------------------------------------------------------------
 local o = {
     speed       = 100,      -- fast-forward multiplier
-    index_dir   = "/tmp",   -- sidecar index storage
+    index_dir   = "",       -- empty = ~/.cache/mpv/no-index-seek (override via script-opts/no_index_seek.conf)
     record_every = 20,      -- record a timestamp every N seconds of playback
 }
 
@@ -45,23 +46,44 @@ local function format_time(t)
     else          return string.format("%d:%02d", m, s) end
 end
 
+local function djb2_hex(s)
+    local h = 5381
+    for i = 1, #s do
+        h = (h * 33 + s:byte(i)) % 0x100000000
+    end
+    return string.format("%08x", h)
+end
+
+local function resolve_index_dir()
+    if o.index_dir and o.index_dir ~= "" then return o.index_dir end
+    return (os.getenv("XDG_CACHE_HOME") or (os.getenv("HOME") or "/tmp") .. "/.cache") .. "/mpv/no-index-seek"
+end
+
 local function index_path()
     if not state.path then return nil end
-    -- sanitise path into a safe filename
+    -- sanitise + hash/truncate so long paths never exceed NAME_MAX (255).
     local safe = state.path:gsub("[/\\:*?\"<>| ]", "_")
-    return o.index_dir .. "/mpv_noidx_" .. safe .. ".idx"
+    if #safe > 80 then safe = safe:sub(-80) end
+    return resolve_index_dir() .. "/mpv_noidx_" .. safe .. "_" .. djb2_hex(state.path) .. ".idx"
 end
 
 local function save_index()
     local p = index_path(); if not p then return end
-    local f = io.open(p, "w"); if not f then return end
+    utils.subprocess({ args = { "mkdir", "-p", resolve_index_dir() }, cancellable = false })
+    local f, err = io.open(p, "w")
+    if not f then msg.warn("[no-index-seek] cannot write index " .. p .. ": " .. tostring(err)); return end
     for _, t in ipairs(state.index) do f:write(string.format("%.3f\n", t)) end
     f:close()
 end
 
 local function load_index()
     local p = index_path(); if not p then return end
-    local f = io.open(p, "r"); if not f then return end
+    local f, err = io.open(p, "r")
+    if not f then
+        -- missing file on first play is normal; warn only when it exists but is unreadable.
+        if utils.file_info(p) then msg.warn("[no-index-seek] cannot read index " .. p .. ": " .. tostring(err)) end
+        return
+    end
     state.index = {}
     for line in f:lines() do
         local t = tonumber(line)

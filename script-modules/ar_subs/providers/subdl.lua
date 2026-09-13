@@ -103,6 +103,33 @@ local function auth_headers()
   return { auth_header() }
 end
 
+-- Key/quota failure classifier shared by sync search() and search_async().
+-- json.error may be a string ("API rate limit exceeded"), a table
+-- ({code=..., message=...}), or even a number (e.g. 429); tostring() on a
+-- table yields "table: 0x..." which matches nothing and silently kills
+-- backup-key failover.
+local function is_key_error(json)
+  if type(json) ~= "table" then return false end
+  local e = json.error
+  local parts = {}
+  if type(e) == "string" or type(e) == "number" then
+    parts[#parts + 1] = tostring(e)
+  elseif type(e) == "table" then
+    for _, k in ipairs({ "message", "msg", "code", "error", "detail" }) do
+      local v = e[k]
+      if type(v) == "string" or type(v) == "number" then
+        parts[#parts + 1] = tostring(v)
+      end
+    end
+  end
+  local combined = table.concat(parts, " "):lower()
+  return combined:find("api") ~= nil or combined:find("limit") ~= nil
+      or combined:find("request") ~= nil or combined:find("quota") ~= nil
+      or combined:find("429") ~= nil or combined:find("403") ~= nil
+      or combined:find("401") ~= nil
+end
+M.is_key_error = is_key_error
+
 -- fetch: low-level GET returning (subs, results, json). Mirrors the original
 -- fetch_subdl_api contract so the orchestrator's strategy fan-out works as-is.
 local function fetch(query_string)
@@ -130,8 +157,7 @@ function M.search(query_string, opts)
   if json and json.status == false
      and M._cfg.backup_key ~= ""
      and M._cfg.backup_key ~= M._cfg.api_key then
-    local err = tostring(json.error or ""):lower()
-    if err:find("api") or err:find("limit") or err:find("request") then
+    if is_key_error(json) then
       log("warn", "SubDL: primary API key failed, retrying with backup key")
       local orig = M._cfg.api_key
       M._cfg.api_key = M._cfg.backup_key
@@ -571,10 +597,7 @@ function M.search_async(query_string, opts, on_done)
     end
     local subs = json.subtitles or {}
     if json.status == false and M._cfg.backup_key ~= "" and M._cfg.backup_key ~= M._cfg.api_key then
-      local err_str = json.error and type(json.error) == "string" and json.error or ""
-      local err_code = json.error and json.error.code and tostring(json.error.code) or ""
-      local combined = (err_str .. " " .. err_code):lower()
-      if combined:find("api") or combined:find("limit") or combined:find("request") or combined:find("quota") then
+      if is_key_error(json) then
         log("warn", "SubDL: async primary key failed, retrying with backup")
         local orig = M._cfg.api_key
         M._cfg.api_key = M._cfg.backup_key

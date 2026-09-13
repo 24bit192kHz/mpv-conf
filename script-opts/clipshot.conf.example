@@ -1,0 +1,9 @@
+# clipshot.lua options (identifier: clipshot).
+# Copy to clipshot.conf to override.
+# name: basename stem for the per-capture temp file (extension kept).
+# Captures use a PID+sequence+timestamp unique file under $XDG_RUNTIME_DIR
+# (fallback /tmp; %TEMP% on Windows, $TMPDIR on macOS), copied to the
+# clipboard (wl-copy/xclip) then deleted -- concurrent captures never share
+# a path. type: clipboard flavor (xclip -t / macOS class), '' = default.
+name=mpv-screenshot.jpeg
+type=

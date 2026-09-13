@@ -135,10 +135,14 @@ function SRT:populate(filename)
     local f_idx, idx = 1, 1
     for _, line in pairs(self:parse_file(filename)) do
         if idx == 1 and #line > 0 then
-            assert(line:match("^%d+$"), string.format("SRT FORMAT ERROR (line %d): expected a number but got '%s'", f_idx, line))
+            if not line:match("^%d+$") then
+                return nil, string.format("SRT FORMAT ERROR (line %d): expected a number but got '%s'", f_idx, line)
+            end
             entry.index = line
         elseif idx == 2 then
-            assert(line:match("^%d+:%d+:%d+,%d+ %-%-> %d+:%d+:%d+,%d+$"), string.format("SRT FORMAT ERROR (line %d): expected a timecode string but got '%s'", f_idx, line))
+            if not line:match("^%d+:%d+:%d+,%d+ %-%-> %d+:%d+:%d+,%d+$") then
+                return nil, string.format("SRT FORMAT ERROR (line %d): expected a timecode string but got '%s'", f_idx, line)
+            end
             local t_start, t_end = parse_timestamp(line)
             entry.start_time, entry.end_time = t_start, t_end
         else
@@ -212,18 +216,30 @@ end
 
 function ASS:populate(filename, language)
     local header, events, parser = {}, {}, nil
+    local seen_events = false
     for _, line in pairs(self:parse_file(filename)) do
         local _, _, event = string.find(line, "^%[([^%]]+)%]%s*$")
         if event then
             if event == "Events" then
+                seen_events = true
                 parser = function(x) table.insert(events, x) end
             else
                 parser = function(x) table.insert(header, x) end
                 parser(line)
             end
         else
-            parser(line)
+            -- A line before any section header (e.g. a BOM-less stray line)
+            -- has no parser yet; keep it in the header verbatim rather than
+            -- nil-derefing.
+            if parser == nil then
+                table.insert(header, line)
+            else
+                parser(line)
+            end
         end
+    end
+    if not seen_events then
+        return nil, string.format("ASS FORMAT ERROR (%s): no [Events] section", filename)
     end
     -- create subtitle instance
     local ev_regex = "^(%a+):%s(.+)$"
@@ -231,20 +247,27 @@ function ASS:populate(filename, language)
         local function create_timestamp(timestamp_str)
             local timestamp_fmt = "^(%d+):(%d+):(%d+).(%d+)"
             local _, _, h, m, s, ms = timestamp_str:find(timestamp_fmt)
-            return TimeStamp:new(h, m, TimeStamp.to_seconds(s, ms))
+            if not h or not m or not s or not ms then return nil end
+            local secs = TimeStamp.to_seconds(s, ms)
+            if secs == nil then return nil end
+            return TimeStamp:new(h, m, secs)
         end
         local new_event = {}
         local _, _, ev_type, ev_values = string.find(ev, ev_regex)
+        if not ev_type or not ev_values then return nil end
         new_event['type'] = ev_type
         -- skipping last column, since that's the text, which can contain commas
         local last_idx = 0;
         for i = 1, #header_columns - 1 do
             local col = header_columns[i]
             local idx = string.find(ev_values, ",", last_idx + 1)
+            if not idx then return nil end
             local val = ev_values:sub(last_idx + 1, idx - 1)
             local timestamp_entry_column = self.header_mapper[col]
             if timestamp_entry_column then
-                new_event[timestamp_entry_column] = create_timestamp(val)
+                local ts = create_timestamp(val)
+                if ts == nil then return nil end
+                new_event[timestamp_entry_column] = ts
             else
                 new_event[col] = val
             end
@@ -258,13 +281,28 @@ function ASS:populate(filename, language)
     sub.header = table.concat(header, "\n")
     sub.language = language
     -- remove and process first entry in events, which is a header
-    local _, _, colstring = string.find(table.remove(events, 1), "^%a+:%s(.+)$")
+    -- (Dialogue-less ASS: events empty or header unparseable -> nil+err,
+    -- never a nil-deref on table.remove/string.find).
+    local first = table.remove(events, 1)
+    if first == nil then
+        return nil, string.format("ASS FORMAT ERROR (%s): [Events] section has no Format line", filename)
+    end
+    local _, _, colstring = string.find(first, "^%a+:%s(.+)$")
+    if not colstring then
+        return nil, string.format("ASS FORMAT ERROR (%s): bad Events header line '%s'", filename, first)
+    end
     local columns = {};
     for i in colstring:gmatch("[^%,%s]+") do table.insert(columns, i) end
+    if #columns == 0 then
+        return nil, string.format("ASS FORMAT ERROR (%s): empty Format columns", filename)
+    end
     sub.event_header = columns
     for _, event in pairs(events) do
         if #event > 0 then
-            table.insert(sub.entries, parse_event(columns, event))
+            local ok_ev, parsed = pcall(parse_event, columns, event)
+            if ok_ev and parsed ~= nil and parsed['type'] ~= nil then
+                table.insert(sub.entries, parsed)
+            end
         end
     end
     return sub

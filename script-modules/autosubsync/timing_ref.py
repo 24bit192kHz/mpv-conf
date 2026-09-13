@@ -236,9 +236,20 @@ def _parse_ass_time(t: str) -> float | None:
 def parse_sub(path: Path) -> tuple[str, list[Cue], str]:
     ext = path.suffix.lower()
     if ext == ".zst":
-        raw = path.with_suffix("")
-        subprocess.check_call(["zstd", "-dqfk", "-o", str(raw), str(path)])
-        return parse_sub(raw)
+        # Decompress to a unique tempfile, never a sibling: a sibling races
+        # concurrent retimes (partial reads) and leaves raw forever.
+        inner_suffix = path.with_suffix("").suffix or ".srt"
+        fd, tmp = tempfile.mkstemp(
+            prefix=path.stem[:32] + "_", suffix=inner_suffix)
+        os.close(fd)
+        try:
+            subprocess.check_call(["zstd", "-dqfk", "-o", tmp, str(path)])
+            return parse_sub(Path(tmp))
+        finally:
+            try:
+                os.unlink(tmp)
+            except OSError:
+                pass
     if ext == ".ass":
         header, cues = parse_ass(path)
         return header, cues, "ass"

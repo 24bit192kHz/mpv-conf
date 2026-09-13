@@ -73,10 +73,16 @@ end
 -- empty TMDB results ("no match") do not retry.
 local retry_done = {}
 
--- session cache: normalized-title -> bool
+-- session cache: normalized-title -> bool (only verified TMDB verdicts;
+-- transport failures are never cached so a later file can recover)
 local cache = {}
 -- inflight: normalized-title -> boolean (prevent re-entrancy)
 local inflight = {}
+-- waiters: normalized-title -> { raw_title=..., gen=..., ja_audio=... }
+-- A second probe() for a norm that already has a request in flight stores
+-- the latest waiter here instead of dropping it; the stale first callback
+-- re-probes the waiter so file2 does not stick at is_anime=0.
+local waiters = {}
 -- Bumped on every file-loaded/end-file so late TMDB callbacks cannot write
 -- is_anime (or read the new file's audio tracks) onto a different video.
 local probe_gen = 0
@@ -105,6 +111,12 @@ local function normalize(s)
   for _, c in ipairs(SCENE_COMPOUNDS) do
     s = s:gsub(c .. "%-[a-z0-9]+", " ")
   end
+  -- Per-token scene noise (amzn/eac3/nf/cr/...): whole-word only via %f[]
+  -- frontiers so "web" never matches inside "webdl". Lua patterns have no
+  -- alternation or {n,m}, hence the per-token loop.
+  for _, t in ipairs(SCENE_TOKENS) do
+    s = s:gsub("%f[%w]" .. t .. "%f[%W]", " ")
+  end
   -- resolution (Lua patterns have no {n,m}: %d{3,4}p matched literally, so
   -- unbracketed 1080p/2160p used to leak into the TMDB query)
   s = s:gsub("%d%d%d%d?p", " ")
@@ -114,8 +126,11 @@ local function normalize(s)
   s = s:gsub("[%s%-_]*s?%d?%d[xXeE]%d+[%s%-_]*", " ")
   -- strip version suffix like "v2" on episodes: "S01E03v2" tail or standalone "v2"
   s = s:gsub("[%s%-_]*v%d+%s*", " ")
-  -- standalone trailing episode number: " 01" or " - 01"
-  s = s:gsub("[%s%-_]+%d+%s*$", " ")
+  -- NOTE: no standalone-trailing-number strip here on purpose. A
+  -- "[%s%-_]+%d+%s*$" strip collides sequels ("Attack on Titan 2" shares
+  -- a cache key with "Attack on Titan"), which is worse than leaving an
+  -- episode number in the TMDB query. Episode markers are already cut
+  -- above (S01E12 / xE / trailing S01); series_cut() handles the rest.
   -- stray trailing dash
   s = s:gsub("%s*%-%s*$", " ")
   s = s:gsub("[%._]+", " ")
@@ -201,7 +216,16 @@ local function probe(raw_title, gen, ja_audio)
     log("cache hit", norm, cache[norm])
     return
   end
-  if inflight[norm] then return end
+  if inflight[norm] then
+    -- Same-norm race: a second file normalizing identically while the
+    -- first request is in flight must not be dropped -- the first
+    -- callback goes stale (gen guard) without caching, which would
+    -- leave this file stuck at is_anime=0. Remember the latest waiter;
+    -- the stale callback re-probes it below.
+    waiters[norm] = { raw_title = raw_title, gen = gen, ja_audio = ja_audio }
+    log("waiter queued", norm)
+    return
+  end
   inflight[norm] = true
 
   local q = (norm:gsub("([^%w%-_%.~ ])", function(c)
@@ -214,8 +238,26 @@ local function probe(raw_title, gen, ja_audio)
     inflight[norm] = nil
     if gen ~= probe_gen then
       log("stale probe dropped", norm)
+      -- Same-norm race recovery: a waiter queued while this request was
+      -- in flight still needs its own probe for its own file.
+      local w = waiters[norm]
+      if w then
+        waiters[norm] = nil
+        -- Only the current file's waiter still matters; an end-file bump
+        -- since queueing means the waiter is obsolete -- drop it instead
+        -- of spending a TMDB request on a dead file.
+        if w.gen == probe_gen then
+          log("stale probe; re-probing waiter", norm)
+          probe(w.raw_title, w.gen, w.ja_audio)
+        else
+          log("stale probe; waiter obsolete", norm)
+        end
+      end
       return
     end
+    -- A stale waiter that has since moved on (end-file bumped probe_gen)
+    -- must not fire: drop it now that this request owns the current gen.
+    waiters[norm] = nil
     if not j or not j.results or #j.results == 0 then
       if not j and not retry_done[norm] then
         -- Transport failure (curl/TMDB hiccup): one retry, made visible.
@@ -242,7 +284,14 @@ local function probe(raw_title, gen, ja_audio)
         end
       end
       if not j then
+        -- Transport failure after retry: never cache. Caching false here
+        -- would poison the session (cache-hit paths return cached false
+        -- forever, even after TMDB recovers). Leave is_anime=0 for this
+        -- file only; the next probe retries fresh.
+        retry_done[norm] = nil
         mp.msg.warn("anime_detect: TMDB unreachable; anime detection skipped for this file")
+        mp.set_property("user-data/anime_detect/is_anime", "0")
+        return
       end
       cache[norm] = false
       mp.set_property("user-data/anime_detect/is_anime", "0")

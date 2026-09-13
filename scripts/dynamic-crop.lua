@@ -120,6 +120,13 @@ local playback_ended
 local function start_sidecar()
     if sidecar_started then return end
     sidecar_started = true
+    -- Clear the intentional-stop marker: stop_sidecar() sets it on every
+    -- stop, and a stale true would make this instance's exit callback treat
+    -- a real crash as intentional (skipping record_scan_failure and
+    -- release_startup_pause until the watchdog fires). Pairing invariant:
+    -- sidecar_started implies not sidecar_stopping; every stop sets it,
+    -- every start clears it, and the early return above preserves it.
+    sidecar_stopping = false
     sidecar_socket = script_ipc_socket()
     if not ipc_server_assigned then
         -- The socket came from script_ipc_socket(): either already live
@@ -276,7 +283,9 @@ local function stop_cuda_timers()
     running = false
     last_applied_needed_at = nil
     restore_after_seek = false
-    startup_pause_active = false
+    -- Shared release (unpause + kill watchdog); clearing flags directly
+    -- leaks pause into the next file (was_paused=true permanent).
+    release_startup_pause()
     initial_scan_completed = false
     one_shot_locked = false
 end
@@ -339,6 +348,11 @@ local function enable_copy_hwdec()
 end
 
 local function restore_hwdec()
+    -- Only the CUDA path owns this save: restoring while the legacy
+    -- fallback is active breaks cropdetect on every later file (hwdec
+    -- reverts to nvdec while legacy requires -copy/no, and the next
+    -- start_legacy_backend early-returns before enable_copy_hwdec).
+    if legacy_started then return end
     if saved_hwdec_for_legacy then
         mp.set_property("hwdec", saved_hwdec_for_legacy)
         mp.msg.info("dynamic_crop: restored hwdec " .. saved_hwdec_for_legacy)
@@ -348,8 +362,7 @@ end
 
 local function start_legacy_backend(reason)
     if legacy_started then return end
-    legacy_started = true
-    opts.enabled = false
+    legacy_started = true    opts.enabled = false
     running = false
     stop_cuda_timers()
     remove_crop()
@@ -403,7 +416,9 @@ remove_crop = function()
     clear_pending_events()
     last_applied_needed_at = nil
     restore_after_seek = false
-    startup_pause_active = false
+    -- Shared release (unpause + kill watchdog); clearing flags directly
+    -- leaks pause into the next file (was_paused=true permanent).
+    release_startup_pause()
     initial_scan_completed = false
     one_shot_locked = false
     reset_render_state()
@@ -416,7 +431,9 @@ local function reset_crop_state()
     full_frame_restore_started_at = nil
     last_applied_needed_at = nil
     restore_after_seek = false
-    startup_pause_active = false
+    -- Shared release (unpause + kill watchdog), then reset so the next
+    -- hold_startup_until_first_scan() can arm for the new file.
+    release_startup_pause()
     initial_scan_completed = false
     one_shot_locked = false
     reset_render_state()
@@ -1296,10 +1313,16 @@ mp.register_event("file-loaded", function()
     source_height = nil
     scan_failures = 0
     -- Previous file may have fallen back to cropdetect; try CUDA again if
-    -- the analyzer is still on disk. Restore nvdec so the new file is not
-    -- stuck on *-copy from the last fallback.
+    -- the analyzer is still on disk. A live legacy backend owns cropdetect
+    -- filters, hwdec=-copy, and its own file-loaded handler (registered via
+    -- dofile): only reclaim them when CUDA can actually restart. Otherwise
+    -- the sidecar would burn GPU with scans_allowed()=false while legacy
+    -- keeps writing crops (dual-backend fight), or hwdec would revert to
+    -- nvdec while legacy still needs -copy (cropdetect goes blind).
     if cuda_binary_available() and runtime_mode ~= "disabled" and opts.backend ~= "legacy" then
+        legacy_started = false
         restore_hwdec()
+        stop_sidecar()
         opts.enabled = true
     end
     publish_uosc_button()

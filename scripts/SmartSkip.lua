@@ -18,6 +18,9 @@
 --  2. g_autoskip_disabled is re-evaluated per file -- the upstream
 --     one-way latch kept autoskip disabled forever once any excluded
 --     file played earlier in the session.
+--  3. silence-skip state (vid/speed/mute/subs/@skiptosilence/0.5s timer)
+--     is aborted without seeking on file-loaded and on_unload via
+--     abort_silence_skip; OP/ED/Preview autoskip stays countdown/OSD-free.
 
 local o = {
 	-----Silence Skip Settings-----
@@ -309,7 +312,7 @@ end
 function restoreProp(timepos,pause)
 	if not timepos then timepos = mp.get_property_number("time-pos") end
 	if not pause then pause = pause_state end
-	
+
 	mp.set_property("vid", vid_state)
 	mp.set_property("force-window", window_state)
 	mp.set_property_bool("mute", mute_state)
@@ -322,7 +325,27 @@ function restoreProp(timepos,pause)
 	mp.set_property("secondary-sub-visibility", secondary_sub_state)
     unbind_keys(o.cancel_silence_skip_keybind, 'cancel-silence-skip')
     mp.set_property('user-data/smartskip/silence-skip', 'no')
-	timer:kill()
+	if timer ~= nil then timer:kill() timer = nil end
+	skip_flag = false
+end
+
+-- [local patch] abort an in-flight silence-skip without seeking: file change
+-- or unload must not leak vid=no / speed=100 / mute / subs / filter / timer.
+-- Mirrors restoreProp but keeps the current time-pos (no seek into the new file).
+function abort_silence_skip()
+	if not skip_flag then return end
+	mp.set_property("vid", vid_state)
+	mp.set_property("force-window", window_state)
+	mp.set_property_bool("mute", mute_state)
+	mp.set_property("speed", speed_state)
+	mp.unobserve_property(foundSilence)
+	mp.command("no-osd af remove @skiptosilence")
+	mp.set_property_bool("pause", pause_state)
+	mp.set_property("sub-visibility", sub_state)
+	mp.set_property("secondary-sub-visibility", secondary_sub_state)
+    unbind_keys(o.cancel_silence_skip_keybind, 'cancel-silence-skip')
+    mp.set_property('user-data/smartskip/silence-skip', 'no')
+	if timer ~= nil then timer:kill() timer = nil end
 	skip_flag = false
 end
 
@@ -1330,6 +1353,10 @@ mp.observe_property("chapter", "number", chapterskip) -- chapterskip.lua
 -- smart skip events / properties / hooks --
 
 mp.register_event('file-loaded', function()
+	-- [local patch] full restore: never leak a previous file's silence-skip
+	-- (vid/speed/mute/subs/filter/timer/observer/binding) into the new file.
+	abort_silence_skip()
+	kill_chapterskip_countdown()
 	file_length = (mp.get_property_native('duration') or 0)
 	g_filepath = (mp.get_property('path') or '') --1.3.4# get filepath needed for exclusion_check function
 	if exclusion_check() then g_autoskip_disabled = true else g_autoskip_disabled = false end --1.3.4# disable / enable autoskip based on exclusion_check [local patch: re-enable per file, was one-way latch]
@@ -1372,6 +1399,9 @@ mp.observe_property('pause', 'bool', function(name, value)
 end)
 
 mp.add_hook('on_unload', 9, function()
+	-- [local patch] full restore: an unload during silence-skip must not leak
+	-- vid/speed/mute/subs/filter/timer/observer/binding into the next file.
+	abort_silence_skip()
 	if geometry_default == "" then mp.set_property("geometry","") end
 	if o.modified_chapters_autosave == true or has_value(o.modified_chapters_autosave, chapter_state) then write_chapters(false) end
 	mp.set_property("keep-open", keep_open_state)

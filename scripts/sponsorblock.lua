@@ -102,6 +102,9 @@ local ranges = {}
 local init = false
 local segment = {a = 0, b = 0, progress = 0, first = true}
 local retrying = false
+local retry_count = 0
+local retry_timer = nil
+local segment_timeout = nil
 local last_skip = {uuid = "", dir = nil}
 local speed_timer = nil
 local fade_timer = nil
@@ -200,11 +203,29 @@ end
 
 function getranges(_, exists, db, more)
     if type(exists) == "table" and exists["status"] == "1" then
-        if options.server_fallback then
-            mp.add_timeout(0, function() getranges(true, true, "") end)
-        else
-            return mp.osd_message("[sponsorblock] database update failed, gave up")
+        -- [local patch] cap database-update retries: the unbounded tail-retry
+        -- looped forever when the db never materializes; give up with OSD/log.
+        retry_count = retry_count + 1
+        if retry_count > 3 then
+            retrying = false
+            retry_count = 0
+            mp.osd_message("[sponsorblock] database update failed, giving up", 5)
+            mp.msg.warn("database update failed, gave up after 3 retries")
+            return
         end
+        if options.server_fallback then
+            if not retrying then
+                mp.osd_message("[sponsorblock] database update failed, retrying...")
+                retrying = true
+            end
+            local delay = 2 ^ retry_count
+            if retry_timer ~= nil then retry_timer:kill() end
+            retry_timer = mp.add_timeout(delay, function() getranges(true, true, "") end)
+        else
+            mp.osd_message("[sponsorblock] database update failed, gave up")
+            return mp.msg.warn("database update failed, gave up")
+        end
+        return
     end
     if db ~= "" and db ~= database_file then db = database_file end
     if exists ~= true and not file_exists(db) then
@@ -217,6 +238,7 @@ function getranges(_, exists, db, more)
     if retrying then
         mp.osd_message("[sponsorblock] database update succeeded")
         retrying = false
+        retry_count = 0
     end
     local sponsors
     local args = {
@@ -236,7 +258,23 @@ function getranges(_, exists, db, more)
     end
     mp.msg.debug("Got: " .. string.gsub(sponsors.stdout, "[\n\r]", ""))
     if not string.match(sponsors.stdout, "^%s*(.*%S)") then return end
-    if string.match(sponsors.stdout, "error") then return getranges(true, true) end
+    -- [local patch] cap server-error tail-retries at 3 with backoff; the old
+    -- bare recurse retried forever when the server kept printing "error"
+    -- (sponsorblock.py prints it on URLError/HTTPError). Give up with OSD/log.
+    if string.match(sponsors.stdout, "error") then
+        retry_count = retry_count + 1
+        if retry_count > 3 then
+            retry_count = 0
+            mp.osd_message("[sponsorblock] server query failed, giving up", 5)
+            mp.msg.warn("server query failed, gave up after 3 retries")
+            return
+        end
+        local delay = 2 ^ retry_count
+        if retry_timer ~= nil then retry_timer:kill() end
+        retry_timer = mp.add_timeout(delay, function() getranges(true, true) end)
+        return
+    end
+    retry_count = 0
     local new_ranges = {}
     local r_count = 0
     if more then r_count = -1 end
@@ -383,7 +421,12 @@ end
 function file_loaded()
     local initialized = init
     ranges = {}
-    segment = {a = 0, b = 0, progress = 0, first = true}
+    -- [local patch] never carry the 1-8/KP1-8 picker or half-set a/b into the
+    -- next file; also reset the server-error retry counter per file.
+    reset_segment_state()
+    if retry_timer ~= nil then retry_timer:kill() retry_timer = nil end
+    retrying = false
+    retry_count = 0
     last_skip = {uuid = "", dir = nil}
     chapter_cache = {}
     local video_path = mp.get_property("path", "")
@@ -404,8 +447,10 @@ function file_loaded()
         if youtube_id then break end
     end
     youtube_id = youtube_id or string.match(video_path, options.local_pattern)
-    
-    if not youtube_id or string.len(youtube_id) < 11 or (local_pattern and string.len(youtube_id) ~= 11) then return end
+
+    -- [local patch] options.local_pattern: the bare global made the ~= 11
+    -- guard dead and truncated over-long local matches before the server query.
+    if not youtube_id or string.len(youtube_id) < 11 or (options.local_pattern ~= "" and string.len(youtube_id) ~= 11) then return end
     youtube_id = string.sub(youtube_id, 1, 11)
     mp.msg.debug("Found YouTube ID: " .. youtube_id)
     init = true
@@ -487,11 +532,24 @@ function set_segment()
 end
 
 function select_category(selected)
+    clear_category_bindings()
+    submit_segment(selected)
+end
+
+-- [local patch] the 1-8/KP1-8 forced bindings were only removed in
+-- select_category; ESC/timeout/file-loaded/end-file leaked them (and a/b).
+function clear_category_bindings()
     for category in string.gmatch(options.categories, "([^,]+)") do
         mp.remove_key_binding("select_category_"..category)
         mp.remove_key_binding("kp_select_category_"..category)
     end
-    submit_segment(selected)
+    mp.remove_key_binding("cancel_select_category")
+    if segment_timeout ~= nil then segment_timeout:kill() segment_timeout = nil end
+end
+
+function reset_segment_state()
+    clear_category_bindings()
+    segment = {a = 0, b = 0, progress = 0, first = true}
 end
 
 function submit_segment(category)
@@ -509,6 +567,17 @@ function submit_segment(category)
             mp.add_forced_key_binding(tostring(category_id), "select_category_"..category, function() select_category(category) end)
             mp.add_forced_key_binding("KP"..tostring(category_id), "kp_select_category_"..category, function() select_category(category) end)
         end
+        -- [local patch] ESC dismisses the picker; a 30s timeout matches the
+        -- OSD so stale 1-8 bindings never survive into normal playback.
+        mp.add_forced_key_binding("ESC", "cancel_select_category", function()
+            mp.osd_message("", 0)
+            reset_segment_state()
+        end)
+        if segment_timeout ~= nil then segment_timeout:kill() end
+        segment_timeout = mp.add_timeout(30, function()
+            mp.osd_message("", 0)
+            reset_segment_state()
+        end)
         mp.osd_message(string.format("[sponsorblock] press a number to select category for segment: %.2d:%.2d:%.2d to %.2d:%.2d:%.2d\n\n" .. category_list .. "\nyou can press Shift+G again for default (Sponsor) or hide this message with g", math.floor(start_time/(60*60)), math.floor(start_time/60%60), math.floor(start_time%60), math.floor(end_time/(60*60)), math.floor(end_time/60%60), math.floor(end_time%60)), 30)
     else
         mp.osd_message("[sponsorblock] submitting segment...", 30)
@@ -532,7 +601,7 @@ function submit_segment(category)
             submit = utils.subprocess({args = args})
         end
         if string.match(submit.stdout, "success") then
-            segment = {a = 0, b = 0, progress = 0, first = true}
+            reset_segment_state()
             mp.osd_message("[sponsorblock] segment submitted")
             if options.make_chapters then
                 clean_chapters()
@@ -545,12 +614,12 @@ function submit_segment(category)
             mp.osd_message("[sponsorblock] segment submission failed, server is down. try again", 5)
         elseif string.match(submit.stdout, "400") then
             mp.osd_message("[sponsorblock] segment submission failed, impossible inputs", 5)
-            segment = {a = 0, b = 0, progress = 0, first = true}
+            reset_segment_state()
         elseif string.match(submit.stdout, "429") then
             mp.osd_message("[sponsorblock] segment submission failed, rate limited. try again", 5)
         elseif string.match(submit.stdout, "409") then
             mp.osd_message("[sponsorblock] segment already submitted", 3)
-            segment = {a = 0, b = 0, progress = 0, first = true}
+            reset_segment_state()
         else
             mp.osd_message("[sponsorblock] segment submission failed", 5)
         end
@@ -558,6 +627,17 @@ function submit_segment(category)
 end
 
 mp.register_event("file-loaded", file_loaded)
+-- [local patch] end-file cleanup mirrors file-loaded so the picker/bindings
+-- and half-set a/b never leak across files or into idle state.
+mp.register_event("end-file", function()
+    reset_segment_state()
+    if retry_timer ~= nil then retry_timer:kill() retry_timer = nil end
+    retrying = false
+    retry_count = 0
+    ranges = {}
+    last_skip = {uuid = "", dir = nil}
+    chapter_cache = {}
+end)
 mp.add_key_binding("g", "set_segment", set_segment)
 mp.add_key_binding("G", "submit_segment", submit_segment)
 mp.add_key_binding("h", "upvote_segment", function() return vote("1") end)
