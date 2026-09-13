@@ -13,11 +13,7 @@ local opts = {
     daemon_idle_timeout = 10.0,
     legacy_script = "~~/script-modules/dynamic-crop-legacy.lua",
     fallback_failures = 2,
-    -- transform zooms the whole rendered picture (video-zoom + video-pan),
-    -- so video AND subtitles stay pixel-locked across cuts. panscan used
-    -- video-crop, which rescales the video plane but leaves the subtitle
-    -- plane behind: subs drifted between aspects (92.7% vs 95.2% window).
-    apply_mode = "transform",
+    apply_mode = "panscan",
     panscan_letterbox = 1.0,
     panscan_full = 0.0,
     panscan_target_aspect = 2.333333,
@@ -55,7 +51,7 @@ local opts = {
 
 options.read_options(opts)
 
-local script_version = "dynamic-crop-lua-transform-v10"
+local script_version = "dynamic-crop-lua-panscan-v9"
 local label = "dynamic_crop_cuda_crop"
 local timer = nil
 local running = false
@@ -597,15 +593,12 @@ local function transform_for_crop(crop, panscan)
 end
 
 local function apply_render_crop(crop, panscan)
-    -- transform path owns the whole picture: video-zoom + video-pan scale
-    -- video AND subtitles together, so both stay pixel-locked across cuts.
-    -- panscan path (video-crop + panscan) rescales the video plane but
-    -- leaves the subtitle plane behind, so subs drift between aspects.
     if opts.apply_mode == "transform" then
         local zoom, pan_x, pan_y = transform_for_crop(crop, panscan)
         if not zoom then return nil end
         set_panscan(opts.panscan_full)
         apply_transform(zoom, pan_x, pan_y)
+        apply_subtitle_crop(crop)
         return zoom, pan_x, pan_y
     end
 
