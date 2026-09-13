@@ -11,8 +11,8 @@ binary=~~/cuda-crop-cpp/build/cuda-crop-cpp
 daemon_idle_timeout=10.0
 legacy_script=~~/script-modules/dynamic-crop-legacy.lua
 fallback_failures=2
-# video-crop + panscan; blend-subtitles=video scales subtitles with the picture.
-# transform (video-zoom) leaves ASS/SRT on the unzoomed plane.
+# video-crop + panscan act on the video plane only; blend-subtitles=no keeps
+# subs on the window layer, fixed, while the video rect behind gets cropped.
 apply_mode=panscan
 panscan_letterbox=1.0
 panscan_full=0.0
