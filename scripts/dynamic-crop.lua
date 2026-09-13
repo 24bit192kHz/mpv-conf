@@ -461,13 +461,23 @@ local function apply_subtitle_crop(crop)
     local _sw, sh = source_dimensions(crop)
     if not h or not y or not sh or sh <= 0 then return end
 
-    -- sub-pos is expressed against the uncropped video canvas. Keep a
-    -- bottom-aligned subtitle inside the new canvas, with a small safety
-    -- allowance for glyph descent. User positions above the crop remain up.
-    local crop_bottom = 100 * (y + h) / sh
+    -- sub-pos is % of the CROPPED frame height. The old formula mapped the
+    -- crop rect bottom (100*(y+h)/sh) into uncropped coordinates, which
+    -- then clips: glyph descent falls past the frame (pos+1.0 clipped to
+    -- ~31 of 43px; a sweep shows only ~95px of sub-pos range render fully
+    -- and pos92 already centers at 96.2%, pos100 fully gone, on a
+    -- 1920x800+0+140 test). Instead map the user's uncropped position into
+    -- the cropped frame so the sub keeps the same RELATIVE place: same %
+    -- of visible picture height. pos_crop = 100*(pos_uncrop*sh/100 - y)/h.
+    -- Skip when the user already sits above the visible area; libass clips
+    -- text past the frame bottom, so hard-cap 91 (last fully-visible value
+    -- on the same sweep; 92 already clips its bottom row).
+    local uncropped = saved_sub_layout.pos
+    local pos_y = uncropped * sh / 100 - y
+    if pos_y < 0 then return end
     mp.set_property_number(
         "sub-pos",
-        math.min(saved_sub_layout.pos, crop_bottom + 1.0)
+        math.min(100 * pos_y / h, 91)
     )
 end
 
