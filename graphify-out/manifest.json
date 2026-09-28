@@ -5,9 +5,9 @@
     "semantic_hash": "3517adaab2175ce03f658a33220fd83d"
   },
   "cuda-crop-cpp/src/main.cpp": {
-    "mtime": 1785642922.5092566,
-    "ast_hash": "460e75018fbd4a1a87a8dee7f9c6667d",
-    "semantic_hash": "460e75018fbd4a1a87a8dee7f9c6667d"
+    "mtime": 1790617249.5992546,
+    "ast_hash": "c598947486c9378cea7e6c67a1fa664a",
+    "semantic_hash": ""
   },
   "install.ps1": {
     "mtime": 1785515247.6366224,
@@ -25,14 +25,14 @@
     "semantic_hash": "6c1885be847bb3a8475fb4101d927d70"
   },
   "script-modules/ar_subs/config.lua": {
-    "mtime": 1785515247.6376224,
-    "ast_hash": "0693adb9bef4eeed1341e5f36207e88e",
-    "semantic_hash": "0693adb9bef4eeed1341e5f36207e88e"
+    "mtime": 1790612137.7186792,
+    "ast_hash": "01eb9e42358ba12374abd9559d2c1f26",
+    "semantic_hash": ""
   },
   "script-modules/ar_subs/http.lua": {
-    "mtime": 1785455525.368679,
-    "ast_hash": "42e25691e1945bbd771e001449b4c17e",
-    "semantic_hash": "42e25691e1945bbd771e001449b4c17e"
+    "mtime": 1788455162.254753,
+    "ast_hash": "40f74f27cd53d39985eeb8747dd720f8",
+    "semantic_hash": ""
   },
   "script-modules/ar_subs/init.lua": {
     "mtime": 1785455525.369629,
@@ -40,9 +40,9 @@
     "semantic_hash": "7e11ffbcdd9efe0b286c15f9a0d56c17"
   },
   "script-modules/ar_subs/providers/subdl.lua": {
-    "mtime": 1785455525.3707047,
-    "ast_hash": "c109b7ffc2353816c250d4f8d96709e9",
-    "semantic_hash": "c109b7ffc2353816c250d4f8d96709e9"
+    "mtime": 1789285508.263293,
+    "ast_hash": "efd98e0443446f307c1782ecb1d083ff",
+    "semantic_hash": ""
   },
   "script-modules/ar_subs/providers/tvdb.lua": {
     "mtime": 1785455525.3697047,
@@ -50,9 +50,9 @@
     "semantic_hash": "5f4f6b02716e890e48bb6240678b4bb5"
   },
   "script-modules/ar_subs/store.lua": {
-    "mtime": 1785455525.390836,
-    "ast_hash": "544b638b849f2b888d282bb8a20c9135",
-    "semantic_hash": "544b638b849f2b888d282bb8a20c9135"
+    "mtime": 1788455162.254753,
+    "ast_hash": "98491352e37726156534bb77a6ac4bff",
+    "semantic_hash": ""
   },
   "script-modules/ar_subs/test/run.lua": {
     "mtime": 1785455525.37249,
@@ -60,9 +60,9 @@
     "semantic_hash": "c5c316731dd45e64d2a5014d8c616830"
   },
   "script-modules/ar_subs/test/spec/test_activation.lua": {
-    "mtime": 1785455525.3734193,
-    "ast_hash": "7e7775eec7fc84cce7abcbbe95a8292e",
-    "semantic_hash": "7e7775eec7fc84cce7abcbbe95a8292e"
+    "mtime": 1788455162.254753,
+    "ast_hash": "031604a68d51e1698e74338725c08844",
+    "semantic_hash": ""
   },
   "script-modules/ar_subs/test/spec/test_cache.lua": {
     "mtime": 1785455525.3742313,
@@ -75,19 +75,19 @@
     "semantic_hash": "1d52f33967fe1ebfe042821bbc63ec45"
   },
   "script-modules/ar_subs/test/spec/test_http_async.lua": {
-    "mtime": 1785455525.3758528,
-    "ast_hash": "6e16e2ce3181395261e3d6b236ffd238",
-    "semantic_hash": "6e16e2ce3181395261e3d6b236ffd238"
+    "mtime": 1788455162.254753,
+    "ast_hash": "cae3264c4504fcf1acdd1970e9625eae",
+    "semantic_hash": ""
   },
   "script-modules/ar_subs/test/spec/test_match.lua": {
-    "mtime": 1785455525.376838,
-    "ast_hash": "d4ecea67e2e0b44fea8aae1144f3e3de",
-    "semantic_hash": "d4ecea67e2e0b44fea8aae1144f3e3de"
+    "mtime": 1790615811.6499271,
+    "ast_hash": "11a9c18707ac40b8f2a52c1430eb803c",
+    "semantic_hash": ""
   },
   "script-modules/ar_subs/test/spec/test_media.lua": {
-    "mtime": 1785455525.3777065,
-    "ast_hash": "a3726c1465571148eb9cda9374489013",
-    "semantic_hash": "a3726c1465571148eb9cda9374489013"
+    "mtime": 1790615466.2583835,
+    "ast_hash": "bfa998c35171baa6a40efbd147634e43",
+    "semantic_hash": ""
   },
   "script-modules/ar_subs/test/spec/test_subdl_client.lua": {
     "mtime": 1785455525.3786697,
@@ -130,9 +130,9 @@
     "semantic_hash": "2006da5ff23df2a68e3a987708a0dc6a"
   },
   "script-modules/ar_subs/util/activation.lua": {
-    "mtime": 1785455869.4682257,
-    "ast_hash": "48f96cddff0c83bd6cacdae376d29bf7",
-    "semantic_hash": "48f96cddff0c83bd6cacdae376d29bf7"
+    "mtime": 1788455162.254753,
+    "ast_hash": "e2383b3770989fe13f01bfd678111704",
+    "semantic_hash": ""
   },
   "script-modules/ar_subs/util/localdb.lua": {
     "mtime": 1785455525.3875089,
@@ -140,14 +140,14 @@
     "semantic_hash": "7bddb7337181465b43465fe5f8be5ffc"
   },
   "script-modules/ar_subs/util/match.lua": {
-    "mtime": 1785607993.8751538,
-    "ast_hash": "fe55476861837924a11b714039e99a78",
-    "semantic_hash": "fe55476861837924a11b714039e99a78"
+    "mtime": 1790615811.6479137,
+    "ast_hash": "a3dcf375336ef5a0158ee07fd8190c5c",
+    "semantic_hash": ""
   },
   "script-modules/ar_subs/util/media.lua": {
-    "mtime": 1785455525.3844538,
-    "ast_hash": "5cee65a5cfa1686335ff4c373ca60507",
-    "semantic_hash": "5cee65a5cfa1686335ff4c373ca60507"
+    "mtime": 1790615465.8065894,
+    "ast_hash": "b95163525a3332fd412fd467593433bd",
+    "semantic_hash": ""
   },
   "script-modules/ar_subs/util/subsource.lua": {
     "mtime": 1785456085.980261,
@@ -165,9 +165,9 @@
     "semantic_hash": "a5510905b6114e04dd3ffc3b10e1190f"
   },
   "script-modules/ar_subs/util/zstd.lua": {
-    "mtime": 1785515247.6376224,
-    "ast_hash": "c50d038fb4ef81d0245277f5b3b4d1d9",
-    "semantic_hash": "c50d038fb4ef81d0245277f5b3b4d1d9"
+    "mtime": 1789285546.6175437,
+    "ast_hash": "e25646ed8aab376e49a7c7b17e26965d",
+    "semantic_hash": ""
   },
   "script-modules/dynamic-crop-legacy.lua": {
     "mtime": 1785515247.6376224,
@@ -175,24 +175,19 @@
     "semantic_hash": "a0c18af9cde45eb4cdb4f37b85659d1f"
   },
   "scripts/SmartSkip.lua": {
-    "mtime": 1785651007.6856349,
-    "ast_hash": "6253047e3ef9d0b15795d10e6c1373fa",
-    "semantic_hash": "6253047e3ef9d0b15795d10e6c1373fa"
+    "mtime": 1789285156.5258927,
+    "ast_hash": "e7c3faa56d9d0e0f2109c3ac3574c1cd",
+    "semantic_hash": ""
   },
   "scripts/anime_detect.lua": {
-    "mtime": 1785521982.8341403,
-    "ast_hash": "a36a856c6cd3a9e5e5177045110d3797",
-    "semantic_hash": "a36a856c6cd3a9e5e5177045110d3797"
-  },
-  "scripts/ar_shortcuts.lua": {
-    "mtime": 1783216065.2004735,
-    "ast_hash": "3ec403eb903b6103ed678ec386dbd1a8",
-    "semantic_hash": "3ec403eb903b6103ed678ec386dbd1a8"
+    "mtime": 1790612401.1836698,
+    "ast_hash": "a45bb13146d29f121ce0b3a59a02d3ad",
+    "semantic_hash": ""
   },
   "scripts/ar_subs.lua": {
-    "mtime": 1785607993.8761537,
-    "ast_hash": "179330331b1e0169e2d022ec501053c5",
-    "semantic_hash": "179330331b1e0169e2d022ec501053c5"
+    "mtime": 1790615836.3633091,
+    "ast_hash": "2aed543cbebe9901b8a948486ac6bdf0",
+    "semantic_hash": ""
   },
   "scripts/auto-save-state.lua": {
     "mtime": 1782477127.7375798,
@@ -205,9 +200,9 @@
     "semantic_hash": "776ed301ea28279564bc26867d3d05f5"
   },
   "scripts/autosubsync/autosubsync.lua": {
-    "mtime": 1785515247.6386225,
-    "ast_hash": "c6e9aa4b82c3554a801751fbd45af0fb",
-    "semantic_hash": "c6e9aa4b82c3554a801751fbd45af0fb"
+    "mtime": 1790616461.967931,
+    "ast_hash": "c2eb64b2d19f66f0344dbf50ea7502d4",
+    "semantic_hash": ""
   },
   "scripts/autosubsync/helpers.lua": {
     "mtime": 1782477127.7403805,
@@ -225,14 +220,14 @@
     "semantic_hash": "877b9e6bb97ef086fba9150c8dcc4fb9"
   },
   "scripts/autosubsync/subtitle.lua": {
-    "mtime": 1782477127.7403805,
-    "ast_hash": "d139e10b266303e08a92fab65b718a98",
-    "semantic_hash": "d139e10b266303e08a92fab65b718a98"
+    "mtime": 1789285477.273091,
+    "ast_hash": "4531f13a398901d6b3acca016c12a244",
+    "semantic_hash": ""
   },
   "scripts/dynamic-crop.lua": {
-    "mtime": 1785642922.5102565,
-    "ast_hash": "ce188e442dbc79eab744bc6ce489189e",
-    "semantic_hash": "ce188e442dbc79eab744bc6ce489189e"
+    "mtime": 1790616874.0847137,
+    "ast_hash": "08344740e1283e14509787fcc685cd29",
+    "semantic_hash": ""
   },
   "scripts/evafast.lua": {
     "mtime": 1782477127.7375798,
@@ -250,24 +245,24 @@
     "semantic_hash": "6b0465c247c09f5959f83bf94069b900"
   },
   "scripts/mpv-sdr-screenshot.lua": {
-    "mtime": 1785515247.6386225,
-    "ast_hash": "d8532e2e30c45b6ca139f248b20bc5a0",
-    "semantic_hash": "d8532e2e30c45b6ca139f248b20bc5a0"
+    "mtime": 1789284601.375093,
+    "ast_hash": "3646408f3c70b2db8f10c6b06c546120",
+    "semantic_hash": ""
   },
   "scripts/no-index-seek.lua": {
-    "mtime": 1782477127.7375798,
-    "ast_hash": "cdd6d4947e32b4f7705db052e2593cef",
-    "semantic_hash": "cdd6d4947e32b4f7705db052e2593cef"
+    "mtime": 1789284950.4404788,
+    "ast_hash": "e1c61f54014bd030953b6585be9adc1b",
+    "semantic_hash": ""
   },
   "scripts/space-hold-speed.lua": {
-    "mtime": 1782846609.3692272,
-    "ast_hash": "05fab1c35740077f7fb85dc3c26810fc",
-    "semantic_hash": "05fab1c35740077f7fb85dc3c26810fc"
+    "mtime": 1789285192.0022178,
+    "ast_hash": "0e50bb410d212f80bf8ef9e4751831b6",
+    "semantic_hash": ""
   },
   "scripts/sponsorblock.lua": {
-    "mtime": 1782477127.7375798,
-    "ast_hash": "ddbd1a6d698d029494de00134db138dd",
-    "semantic_hash": "ddbd1a6d698d029494de00134db138dd"
+    "mtime": 1789285296.5938554,
+    "ast_hash": "8f8570ca1fa8bbc8a1083fd571b8f382",
+    "semantic_hash": ""
   },
   "scripts/sponsorblock_shared/main.lua": {
     "mtime": 1782477127.7353292,
@@ -345,9 +340,9 @@
     "semantic_hash": "c3f9adce7b2021c6b4c8e2de2c395620"
   },
   "scripts/uosc/elements/Timeline.lua": {
-    "mtime": 1757781188.0,
-    "ast_hash": "937267fe5b68130b18ddb0e991e8f07e",
-    "semantic_hash": "937267fe5b68130b18ddb0e991e8f07e"
+    "mtime": 1789285299.621876,
+    "ast_hash": "27b346353874649a7af1a75e42ec6491",
+    "semantic_hash": ""
   },
   "scripts/uosc/elements/TopBar.lua": {
     "mtime": 1756551242.0,
@@ -470,9 +465,9 @@
     "semantic_hash": "0acf136290e26108a8895a47c2b7225c"
   },
   "README.md": {
-    "mtime": 1785651007.6856349,
-    "ast_hash": "9a67794cf804cea8cc7c0e6bb2938013",
-    "semantic_hash": "9a67794cf804cea8cc7c0e6bb2938013"
+    "mtime": 1789285370.1896107,
+    "ast_hash": "7ff04f3e28fdaf9b3c4032cb262a5819",
+    "semantic_hash": ""
   },
   "cuda-crop-cpp/CMakeLists.txt": {
     "mtime": 1783497631.751121,
@@ -480,9 +475,9 @@
     "semantic_hash": "e79ed2a387b0ac39d2be2c95d3aa1e77"
   },
   "scripts/clipshot.lua": {
-    "mtime": 1785642922.5102565,
-    "ast_hash": "35fd1f4906d5ba7043360a71f38c9cc0",
-    "semantic_hash": "35fd1f4906d5ba7043360a71f38c9cc0"
+    "mtime": 1789285370.1894495,
+    "ast_hash": "5bd0cec93bc5c75ce8b3edba2c920d62",
+    "semantic_hash": ""
   },
   "scripts/cycle-through-existing.lua": {
     "mtime": 1785642922.5102565,
@@ -495,28 +490,58 @@
     "semantic_hash": "dcd1feca597d340cf72c5ea6ce978414"
   },
   "scripts/sub-lang-filter.lua": {
-    "mtime": 1785642922.5102565,
-    "ast_hash": "26613cf7c46200a1135ca2dc6bad8cbb",
-    "semantic_hash": "26613cf7c46200a1135ca2dc6bad8cbb"
+    "mtime": 1786343518.5947704,
+    "ast_hash": "9591f3aeb222342f9e71ac2546a886db",
+    "semantic_hash": ""
   },
   "CLAUDE.md": {
-    "mtime": 1785607993.8651536,
-    "ast_hash": "4475058d476f49a040fa6e9ba602f5b3",
-    "semantic_hash": "4475058d476f49a040fa6e9ba602f5b3"
-  },
-  "scripts/autochapters/anime.json": {
-    "mtime": 1785650176.6334493,
-    "ast_hash": "f09a9521772a5d1bb96bd72ea98ac375",
-    "semantic_hash": "f09a9521772a5d1bb96bd72ea98ac375"
+    "mtime": 1790617439.6932926,
+    "ast_hash": "aa1e6c4b28b74f66c77f350a90ac6df9",
+    "semantic_hash": ""
   },
   "scripts/autochapters/main.lua": {
-    "mtime": 1785651007.6856349,
-    "ast_hash": "326e8d85a48295f71a65c6a816c488ca",
-    "semantic_hash": "326e8d85a48295f71a65c6a816c488ca"
+    "mtime": 1790610880.3254333,
+    "ast_hash": "24fcf355057ba1cd3f36cbf5a7667d01",
+    "semantic_hash": ""
   },
-  "scripts/autochapters/relations.json": {
-    "mtime": 1785650173.3119,
-    "ast_hash": "7d946ed995997009daf3372a03a167d0",
-    "semantic_hash": "7d946ed995997009daf3372a03a167d0"
+  "script-modules/ar_subs/test/spec/test_curl_secrets.lua": {
+    "mtime": 1790611190.372139,
+    "ast_hash": "14983d85f3fd7b989fb0ed657d7e4672",
+    "semantic_hash": ""
+  },
+  "script-modules/ar_subs/util/curl_secrets.lua": {
+    "mtime": 1790611170.9735446,
+    "ast_hash": "3cc741d3a10e59b2e1f9ddd15c77e38e",
+    "semantic_hash": ""
+  },
+  "script-modules/autosubsync/compare_from_history.py": {
+    "mtime": 1788455162.2857535,
+    "ast_hash": "56187ef611d879dc30fafc2be3b912ec",
+    "semantic_hash": ""
+  },
+  "script-modules/autosubsync/timing_ref.py": {
+    "mtime": 1789284681.472639,
+    "ast_hash": "e957c4359d47f7f6ea84e84f6472446b",
+    "semantic_hash": ""
+  },
+  "script-modules/sub_lang_filter/test/test_sub_lang_filter.lua": {
+    "mtime": 1786348583.3417397,
+    "ast_hash": "c3b8aeda75575d057685125d2043c40e",
+    "semantic_hash": ""
+  },
+  "scripts/keylayout.lua": {
+    "mtime": 1788455162.2557533,
+    "ast_hash": "0e77e97f8f190802e89fe759c16ec6a4",
+    "semantic_hash": ""
+  },
+  "AGENTS.md": {
+    "mtime": 1788455162.2857535,
+    "ast_hash": "ed807522961a74ec7b26dd4ac49704dc",
+    "semantic_hash": ""
+  },
+  "GEMINI.md": {
+    "mtime": 1788455162.2857535,
+    "ast_hash": "66285a0ec02ba078d9e58b77a3de6bd4",
+    "semantic_hash": ""
   }
 }

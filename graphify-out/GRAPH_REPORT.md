@@ -1,104 +1,105 @@
-# Graph Report - .  (2026-08-02)
+# Graph Report - mpv  (2026-09-28)
 
 ## Corpus Check
-- 3 files · ~135,670 words
+- 108 files · ~157,078 words
 - Verdict: corpus is large enough that graph structure adds value.
 
 ## Summary
-- 1334 nodes · 2569 edges · 75 communities (63 shown, 12 thin omitted)
-- Extraction: 83% EXTRACTED · 17% INFERRED · 0% AMBIGUOUS · INFERRED: 447 edges (avg confidence: 0.8)
-- Token cost: 0 input · 40,121 output
+- 1503 nodes · 3160 edges · 71 communities (57 shown, 14 thin omitted)
+- Extraction: 80% EXTRACTED · 20% INFERRED · 0% AMBIGUOUS · INFERRED: 647 edges (avg confidence: 0.8)
+- Token cost: 0 input · 0 output
+
+## Graph Freshness
+- Built from commit: `54c0d82a`
+- Run `git rev-parse HEAD` and compare to check if the graph is stale.
+- Run `graphify update .` after code changes (no API cost).
 
 ## Community Hubs (Navigation)
-- main.cpp / string
-- autosubsync.lua / mp.get_property()
-- ar_subs.lua / enhanced_auto_fetch_if_need…
+- main.cpp
+- autosubsync.lua
+- ar_subs.lua
 - mp.commandv() / mp.get_property_native()
-- dynamic-crop.lua / run_scan()
-- subdl.lua / match.lua
-- Menu.lua / mp.set_property_bool()
+- dynamic-crop.lua
+- subdl.lua
+- Menu.lua
 - ar_subs (Arabic subtitle fe… / autosubsync (ffsubsync alig…
 - memo.lua / show_history()
-- SmartSkip.lua / prompt_msg()
-- inputevent.lua / bind_from_options_configs()
-- utils.parse_json() / http.lua
-- thumbfast.lua / mp.command_native()
-- cursor.lua / mp.get_time()
-- menu.lua / sub-lang-filter.lua
-- Volume.lua / Volume:render()
-- Controls.lua / Button.lua
-- Timeline.lua / load_youtube_heatmap()
-- lib/utils.lua / navigate_playlist()
-- std.lua / itable_clear()
-- sponsorblock.lua / mp.osd_message()
+- mp.get_property_native
+- inputevent.lua
+- utils.parse_json
+- mp.command_native
+- cursor.lua
+- menu.lua
+- Controls.lua
+- Timeline.lua
+- lib/utils.lua
+- std.lua
+- request_render
 - subtitle.lua / AbstractSubtitle:parse_file…
-- TopBar.lua / expand_template()
-- media.lua / M.classify_content_type()
-- mp.lua / mp.observe_property()
-- Element.lua / table_keys()
-- Updater.lua / t()
-- Elements.lua / buttons.lua
+- TopBar.lua
+- media.lua
+- table_assign
+- Element.lua
+- Updater.lua
+- Elements.lua
 - store.lua / M.get()
-- clamp() / Speed.lua
+- mp.set_property_native
 - fzy.lua / compute()
-- menus.lua / get_all_user_bindings()
-- text.lua / utf8_char_bytes()
-- itable_index_of() / Menu:update()
-- uosc/main.lua / handle_options()
+- t
+- text.lua
+- clipshot.lua
+- uosc/main.lua
 - subtitle_api.lua / do_fetch()
 - tvdb.lua / test_tvdb.lua
 - localdb.lua / M.find_episode_subs()
-- autochapters/main.lua / api_lookup()
-- table_assign() / itable_join()
-- is_protocol() / get_adjacent_files()
-- request_render() / Menu:set_scroll_to()
+- timing_ref.py
+- Button.lua
+- CycleButton:init
+- cursor:trigger
 - run.lua / _fmt()
-- search_items() / utf8_iter()
-- text_width() / Timeline:render()
-- comma_split() / update_config()
-- ass.lua / ass_mt:tooltip()
-- activation.lua / zstd.lua
-- mp.add_timeout() / screenshot()
-- Controls:init_options() / itable_has()
+- no-index-seek.lua
+- zstd.lua
 - itable_find() / Menu:select_by_offset()
-- config.lua / M.load()
 - uosc_picker.lua / M.format_item()
-- CycleButton:init() / CycleButton.lua
-- wrap_text() / serialize_chapters()
+- Curtain.lua
 - install.sh / need_cmd()
-- Menu:search_cursor_move() / find_string_segment_bound()
 - cuda-crop-cpp executable ta… / nlohmann_json dependency
-- tween() / Element:tween()
+- sub-lang-filter.lua
 - CLAUDE.md — mpv-conf projec…
 - SmartSkip (OP/ED/Preview au…
 - sponsorblock (YouTube only)
 - memo (playback history)
 - mpv-mpris (MPRIS media-key …
 - uosc UI
+- cache.lua
+- curl_secrets.lua
+- compare_from_history.py
+- AGENTS.md
+- GEMINI.md
 
 ## God Nodes (most connected - your core abstractions)
-1. `request_render()` - 39 edges
-2. `mp.commandv()` - 34 edges
-3. `mp.get_property()` - 27 edges
-4. `mp.get_property_native()` - 27 edges
-5. `mp.set_property()` - 21 edges
-6. `mp.command_native()` - 20 edges
-7. `sync_subtitles()` - 19 edges
-8. `mp.add_timeout()` - 18 edges
-9. `AnalyzerConfig` - 17 edges
-10. `utils.parse_json()` - 16 edges
+1. `mp.get_property_native()` - 57 edges
+2. `mp.get_property()` - 53 edges
+3. `request_render()` - 39 edges
+4. `mp.osd_message()` - 37 edges
+5. `mp.command_native()` - 36 edges
+6. `mp.add_timeout()` - 31 edges
+7. `utils.file_info()` - 31 edges
+8. `mp.set_property_native()` - 28 edges
+9. `utils.parse_json()` - 26 edges
+10. `Cue` - 20 edges
 
 ## Surprising Connections (you probably didn't know these)
-- `Timeline:clear_thumbnail()` --calls--> `mp.commandv()`  [INFERRED]
-  scripts/uosc/elements/Timeline.lua → script-modules/ar_subs/test/stubs/mp.lua
-- `Timeline:set_from_cursor()` --calls--> `mp.commandv()`  [INFERRED]
-  scripts/uosc/elements/Timeline.lua → script-modules/ar_subs/test/stubs/mp.lua
-- `Volume:render()` --calls--> `mp.commandv()`  [INFERRED]
-  scripts/uosc/elements/Volume.lua → script-modules/ar_subs/test/stubs/mp.lua
-- `load_track()` --calls--> `mp.commandv()`  [INFERRED]
-  scripts/uosc/lib/utils.lua → script-modules/ar_subs/test/stubs/mp.lua
-- `fast_forward()` --calls--> `mp.set_property()`  [INFERRED]
-  scripts/sponsorblock.lua → script-modules/ar_subs/test/stubs/mp.lua
+- `Menu:close()` --calls--> `mp.set_property_bool()`  [INFERRED]
+  scripts/uosc/elements/Menu.lua → script-modules/ar_subs/test/stubs/mp.lua
+- `Menu:search_cancel()` --calls--> `mp.set_property_bool()`  [INFERRED]
+  scripts/uosc/elements/Menu.lua → script-modules/ar_subs/test/stubs/mp.lua
+- `Element:register_mp_event()` --calls--> `mp.register_event()`  [INFERRED]
+  scripts/uosc/elements/Element.lua → script-modules/ar_subs/test/stubs/mp.lua
+- `Button:handle_cursor_click()` --calls--> `mp.add_timeout()`  [INFERRED]
+  scripts/uosc/elements/Button.lua → script-modules/ar_subs/test/stubs/mp.lua
+- `anime_detect.lua` --semantically_similar_to--> `anime_detect.lua (TMDB anime classifier)`  [INFERRED] [semantically similar]
+  CLAUDE.md → README.md
 
 ## Import Cycles
 - None detected.
@@ -111,35 +112,35 @@
 - **Repo-specific mpv config gotchas and conventions** — claude_conditional_profiles, claude_msg_level_gotcha, claude_mp_options_sharing, claude_key_precedence, claude_lua_pattern_limits, claude_zstd_convention, claude_cache_integrity [INFERRED 0.85]
 - **Dynamic crop C++ sidecar build chain** — cuda_crop_cpp_cmakelists_cudacropcpp, cuda_crop_cpp_cmakelists_nlohmannjson [EXTRACTED 1.00]
 
-## Communities (75 total, 12 thin omitted)
+## Communities (71 total, 14 thin omitted)
 
-### Community 0 - "main.cpp / string"
+### Community 0 - "main.cpp"
 Cohesion: 0.06
-Nodes (84): analyze_timeline_events(), AnalyzerConfig, current_crop, duration_seconds, gpu_id, min_votes, round_to, sample_step (+76 more)
+Nodes (86): analyze_timeline_events(), AnalyzerConfig, current_crop, duration_seconds, gpu_id, min_votes, round_to, sample_step (+78 more)
 
-### Community 1 - "autosubsync.lua / mp.get_property()"
-Cohesion: 0.07
-Nodes (54): mp.get_property(), decode_value(), encode_value(), skip_ws(), utils.file_info(), utils.format_json(), utils.join_path(), apply_cached_transform() (+46 more)
-
-### Community 2 - "ar_subs.lua / enhanced_auto_fetch_if_need…"
+### Community 1 - "autosubsync.lua"
 Cohesion: 0.06
-Nodes (56): M.migrate_keys(), M.stringify_keys(), apply_download_quota_block(), ar_subs_pick(), bump_type_count(), check_existing_season_files(), check_existing_subtitle_for_file(), count_arabic_subs() (+48 more)
+Nodes (71): decode_value(), encode_value(), skip_ws(), utils.file_info(), utils.format_json(), utils.join_path(), apply_cached_transform(), ass_time_to_sec() (+63 more)
+
+### Community 2 - "ar_subs.lua"
+Cohesion: 0.05
+Nodes (84): mp.get_property(), mp.osd_message(), utils.subprocess(), basename(), air_day(), anime_season_unknown(), apply_download_quota_block(), ar_subs_next_handler() (+76 more)
 
 ### Community 3 - "mp.commandv() / mp.get_property_native()"
+Cohesion: 0.25
+Nodes (22): apply_crop(), cleanup(), collect_metadata(), command_filter(), compute_metadata(), filter_state(), generate_ratios(), insert_cropdetect_filter() (+14 more)
+
+### Community 4 - "dynamic-crop.lua"
 Cohesion: 0.07
-Nodes (54): mp.commandv(), mp.get_property_native(), mp.set_property(), apply_crop(), cleanup(), collect_metadata(), command_filter(), compute_metadata() (+46 more)
+Nodes (62): mp.set_property_number(), apply_crop(), apply_render_crop(), apply_subtitle_crop(), apply_transform(), build_args(), build_request(), cancel_pending_near() (+54 more)
 
-### Community 4 - "dynamic-crop.lua / run_scan()"
-Cohesion: 0.09
-Nodes (58): apply_crop(), apply_render_crop(), apply_transform(), build_args(), build_request(), clamp(), clear_pending_events(), crop_parts() (+50 more)
-
-### Community 5 - "subdl.lua / match.lua"
-Cohesion: 0.06
-Nodes (27): alternate_download_key(), auth_header(), auth_headers(), describe_download(), download_url_to_srt(), fetch(), get_utils(), is_zip_file() (+19 more)
-
-### Community 6 - "Menu.lua / mp.set_property_bool()"
+### Community 5 - "subdl.lua"
 Cohesion: 0.05
-Nodes (4): mp.set_property_bool(), Menu:close(), Menu:search_cancel(), Menu:search_init()
+Nodes (39): M.load(), M.read_dotenv(), alternate_download_key(), auth_header(), auth_headers(), describe_download(), download_url_to_srt(), fetch() (+31 more)
+
+### Community 6 - "Menu.lua"
+Cohesion: 0.05
+Nodes (9): Menu:close(), Menu:command_or_event(), Menu:handle_shortcut(), Menu:paste(), Menu:search_cancel(), Menu:search_cursor_move(), Menu:search_query_backspace(), Menu:search_query_delete() (+1 more)
 
 ### Community 7 - "ar_subs (Arabic subtitle fe… / autosubsync (ffsubsync alig…"
 Cohesion: 0.06
@@ -149,105 +150,93 @@ Nodes (39): [Anime] conditional profile (Anime4K v4.x Mode A), anime_detect.lua,
 Cohesion: 0.08
 Nodes (26): ass_clean(), bind_keys(), close_menu(), draw_menu(), file_load(), get_full_path(), has_protocol(), memo_close() (+18 more)
 
-### Community 9 - "SmartSkip.lua / prompt_msg()"
-Cohesion: 0.12
-Nodes (32): bake_chapters(), bind_keys(), chapterSeek(), chapterskip(), command_exists(), construct_ffmetadata(), detect_os(), eofHandler() (+24 more)
+### Community 9 - "mp.get_property_native"
+Cohesion: 0.05
+Nodes (62): mp.add_periodic_timer(), mp.add_timeout(), mp.get_property_native(), mp.set_property_bool(), delete_watch_later(), pause_timer_while_paused(), save(), save_if_pause() (+54 more)
 
-### Community 10 - "inputevent.lua / bind_from_options_configs()"
+### Community 10 - "inputevent.lua"
 Cohesion: 0.09
-Nodes (15): bind(), bind_from_conf(), bind_from_json(), bind_from_options_configs(), command(), command_invert(), command_split(), debounce() (+7 more)
+Nodes (14): bind(), bind_from_conf(), bind_from_json(), bind_from_options_configs(), command(), command_invert(), command_split(), debounce() (+6 more)
 
-### Community 11 - "utils.parse_json() / http.lua"
-Cohesion: 0.11
-Nodes (22): build_curl_args(), is_rate_limited(), M.request_async(), M.request_async_json(), parse_curl_output(), parse_json_response(), utils.parse_json(), curl_json() (+14 more)
+### Community 11 - "utils.parse_json"
+Cohesion: 0.07
+Nodes (41): build_curl_args(), is_rate_limited(), M.request_async(), M.request_async_json(), parse_curl_output(), parse_json_response(), mp.create_osd_overlay(), utils.parse_json() (+33 more)
 
-### Community 12 - "thumbfast.lua / mp.command_native()"
-Cohesion: 0.17
-Nodes (24): mp.command_native(), calc_dimensions(), check_new_thumb(), clear(), draw(), file_load(), get_os(), info() (+16 more)
-
-### Community 13 - "cursor.lua / mp.get_time()"
-Cohesion: 0.10
-Nodes (14): mp.get_time(), Element:update_proximity(), Speed:handle_cursor_down(), Timeline:on_global_mouse_move(), Updater:render(), cursor:collides_with(), cursor:_find_history_sample(), cursor:get_velocity() (+6 more)
-
-### Community 14 - "menu.lua / sub-lang-filter.lua"
-Cohesion: 0.12
-Nodes (10): announce(), build_allowed(), cycle(), expand(), label(), norm(), on_track_list(), pick_default() (+2 more)
-
-### Community 16 - "Controls.lua / Button.lua"
+### Community 12 - "mp.command_native"
 Cohesion: 0.09
-Nodes (3): Button:handle_cursor_click(), Button:render(), Controls:update_dimensions()
+Nodes (42): mp.command_native(), mp.command_native_async(), clean_chapters(), clear_category_bindings(), create_chapter(), fade_audio(), file_exists(), file_loaded() (+34 more)
 
-### Community 17 - "Timeline.lua / load_youtube_heatmap()"
+### Community 13 - "cursor.lua"
 Cohesion: 0.08
-Nodes (6): Timeline:clear_thumbnail(), Timeline:init(), Timeline:set_from_cursor(), Timeline:toggle_progress(), load_youtube_heatmap(), points_to_bezier()
+Nodes (15): mp.get_time(), Controls:register_badge_updater(), Element:register_disposer(), Menu:activate_menu(), Menu:reset_navigation(), Speed:handle_cursor_down(), Timeline:on_global_mouse_move(), cursor:collides_with() (+7 more)
 
-### Community 18 - "lib/utils.lua / navigate_playlist()"
+### Community 14 - "menu.lua"
+Cohesion: 0.12
+Nodes (13): add_final_mapping(), apply_builtin_groups(), contains_control(), get_selected_group_names(), install_bindings(), is_ascii(), load_map_file(), load_user_maps() (+5 more)
+
+### Community 18 - "lib/utils.lua"
 Cohesion: 0.13
-Nodes (20): Menu:paste(), ass_mt.opacity(), cursor:direction_to_rectangle_distance(), call_ziggy(), decide_navigation_in_list(), delete_file(), delete_file_navigate(), get_clipboard() (+12 more)
+Nodes (34): Timeline:init(), cursor:direction_to_rectangle_distance(), create_track_loader_menu_opener(), open_file_navigation_menu(), open_open_file_menu(), itable_map(), call_ziggy(), delete_file() (+26 more)
 
-### Community 19 - "std.lua / itable_clear()"
-Cohesion: 0.09
-Nodes (4): cursor:clear_zones(), CircularBuffer:clear(), itable_clear(), trim_end()
+### Community 19 - "std.lua"
+Cohesion: 0.07
+Nodes (23): Element:has_keybindings(), Element:remove_key_bindings(), Menu:enable_key_bindings(), Menu:update(), cursor:clear_zones(), get_languages(), CircularBuffer:clear(), comma_split() (+15 more)
 
-### Community 20 - "sponsorblock.lua / mp.osd_message()"
-Cohesion: 0.21
-Nodes (19): mp.command_native_async(), mp.osd_message(), utils.subprocess(), clean_chapters(), create_chapter(), fade_audio(), fast_forward(), file_exists() (+11 more)
+### Community 20 - "request_render"
+Cohesion: 0.12
+Nodes (14): Elements:remove(), Menu:activate_index(), Menu:deactivate_items(), Menu:handle_cursor_up(), Menu:navigate_action(), Menu:on_global_mouse_move(), Menu:search_trigger(), Menu:select_action() (+6 more)
 
 ### Community 21 - "subtitle.lua / AbstractSubtitle:parse_file…"
 Cohesion: 0.10
 Nodes (4): AbstractSubtitle:parse_file(), SRT.entry(), SRT:populate(), trim()
 
-### Community 22 - "TopBar.lua / expand_template()"
+### Community 22 - "TopBar.lua"
+Cohesion: 0.11
+Nodes (4): expand_template(), TopBar:add_template_listener(), TopBar:register_observers(), get_expansion_props()
+
+### Community 23 - "media.lua"
+Cohesion: 0.13
+Nodes (9): best_type_from_counts(), M.classify_content_type(), M.clean_title(), M.extract_series_info(), M.normalize_path_key(), M.normalize_stem_key(), M.path_title_candidates(), M.release_head() (+1 more)
+
+### Community 24 - "table_assign"
+Cohesion: 0.22
+Nodes (9): Element:init(), ManagedButton:init(), Menu:scroll_to(), Menu:update_items(), itable_join(), table_assign(), table_copy(), execute_command() (+1 more)
+
+### Community 25 - "Element.lua"
 Cohesion: 0.10
-Nodes (6): expand_template(), TopBar:add_template_listener(), TopBar:register_observers(), TopBar:update_render_titles(), regexp_escape(), get_expansion_props()
+Nodes (5): Element:flash(), Element:register_mp_event(), Element:trigger(), Element:tween(), tween()
 
-### Community 23 - "media.lua / M.classify_content_type()"
-Cohesion: 0.13
-Nodes (8): best_type_from_counts(), M.classify_content_type(), M.clean_title(), M.extract_series_info(), M.normalize_path_key(), M.normalize_stem_key(), M.path_title_candidates(), M.resolve_media_info()
-
-### Community 24 - "mp.lua / mp.observe_property()"
-Cohesion: 0.13
-Nodes (13): mp.add_periodic_timer(), mp.create_osd_overlay(), mp.observe_property(), mp.register_event(), delete_watch_later(), pause_timer_while_paused(), save(), save_if_pause() (+5 more)
-
-### Community 25 - "Element.lua / table_keys()"
-Cohesion: 0.11
-Nodes (5): Element:flash(), Element:has_keybindings(), Element:remove_key_bindings(), Element:trigger(), table_keys()
-
-### Community 26 - "Updater.lua / t()"
-Cohesion: 0.14
-Nodes (14): cleanup_output(), Updater:append_output(), Updater:check(), Updater:display_error(), Updater:init(), Updater:open_changelog(), Updater:select_next_button(), Updater:select_prev_button() (+6 more)
-
-### Community 27 - "Elements.lua / buttons.lua"
-Cohesion: 0.11
-Nodes (5): Elements:add(), Elements:remove(), buttons:set(), buttons:unsubscribe(), itable_delete_value()
+### Community 26 - "Updater.lua"
+Cohesion: 0.15
+Nodes (11): cleanup_output(), Updater:append_output(), Updater:check(), Updater:display_error(), Updater:init(), Updater:open_changelog(), Updater:select_next_button(), Updater:select_prev_button() (+3 more)
 
 ### Community 28 - "store.lua / M.get()"
 Cohesion: 0.29
 Nodes (15): exit_ok(), have_bin(), log(), M.del(), M.get(), M.init(), M.purge_older(), M.put() (+7 more)
 
-### Community 29 - "clamp() / Speed.lua"
-Cohesion: 0.12
-Nodes (8): Menu:move_selected_item_by(), Menu:update_dimensions(), Speed:on_global_mouse_leave(), Speed:on_global_mouse_move(), Speed:render(), Timeline:get_time_at_x(), VolumeSlider:set_volume(), clamp()
+### Community 29 - "mp.set_property_native"
+Cohesion: 0.09
+Nodes (18): mp.set_property_native(), Menu:destroy(), Menu:init(), Menu:move_selected_item_by(), Menu:set_scroll_to(), Menu:update_dimensions(), Speed:handle_cursor_up(), Speed:handle_wheel_down() (+10 more)
 
 ### Community 30 - "fzy.lua / compute()"
 Cohesion: 0.20
 Nodes (8): compute(), fzy.filter(), fzy.has_match(), fzy.positions(), fzy.score(), is_lower(), is_upper(), precompute_bonus()
 
-### Community 31 - "menus.lua / get_all_user_bindings()"
-Cohesion: 0.21
-Nodes (11): create_select_tracklist_type_menu_opener(), create_self_updating_menu_opener(), create_track_loader_menu_opener(), get_all_user_bindings(), get_keybinds_items(), get_menu_items(), is_uosc_menu_comment(), open_command_menu() (+3 more)
+### Community 31 - "t"
+Cohesion: 0.13
+Nodes (27): mp.register_event(), Controls:init_options(), Elements:flash(), TopBar:update_render_titles(), t(), create_select_tracklist_type_menu_opener(), create_self_updating_menu_opener(), get_all_user_bindings() (+19 more)
 
-### Community 32 - "text.lua / utf8_char_bytes()"
-Cohesion: 0.23
-Nodes (12): char_length(), fit_on_screen(), get_roman_match_positions(), highlight_match(), text_length(), utf8_char_bytes(), utf8_charpos_to_bytepos(), utf8_next() (+4 more)
+### Community 32 - "text.lua"
+Cohesion: 0.07
+Nodes (39): Element:update_proximity(), Menu:search_internal(), Menu:update_content_dimensions(), search_items(), Timeline:render(), TopBar:render(), Updater:render(), ass_mt.opacity() (+31 more)
 
-### Community 33 - "itable_index_of() / Menu:update()"
-Cohesion: 0.15
-Nodes (14): Controls:register_badge_updater(), Element:register_disposer(), Menu:activate_menu(), Menu:handle_shortcut(), Menu:reset_navigation(), Menu:update(), cursor:off(), cursor:on() (+6 more)
+### Community 33 - "clipshot.lua"
+Cohesion: 0.60
+Nodes (5): base_dir(), build_cmd(), clipshot(), pid(), unique_file()
 
-### Community 34 - "uosc/main.lua / handle_options()"
-Cohesion: 0.22
-Nodes (10): mp.add_key_binding(), timestamp_zero_rep_clear_cache(), bind_command(), create_state_setter(), handle_options(), set_state(), update_display_dimensions(), update_duration() (+2 more)
+### Community 34 - "uosc/main.lua"
+Cohesion: 0.18
+Nodes (10): timestamp_zero_rep_clear_cache(), render(), create_state_setter(), handle_options(), set_state(), update_display_dimensions(), update_duration(), update_fullormaxed() (+2 more)
 
 ### Community 35 - "subtitle_api.lua / do_fetch()"
 Cohesion: 0.26
@@ -261,89 +250,77 @@ Nodes (8): auth_headers(), log(), M.login(), M.resolve_absolute(), M.search_seri
 Cohesion: 0.30
 Nodes (9): log(), M.find_episode_subs(), M.find_movie_subs(), M.init(), M.slug_candidates(), num(), query(), slugify() (+1 more)
 
-### Community 38 - "autochapters/main.lua / api_lookup()"
-Cohesion: 0.33
-Nodes (10): api_lookup(), extract_mal_id(), file_load(), find_chapters(), guess(), log(), read_json(), resolve_relations() (+2 more)
+### Community 38 - "timing_ref.py"
+Cohesion: 0.12
+Nodes (46): affine_from_matches(), apply_affine(), apply_oracle(), apply_times(), asr_cues(), build_oracle(), Cue, detect_src_lang() (+38 more)
 
-### Community 39 - "table_assign() / itable_join()"
-Cohesion: 0.17
-Nodes (12): Element:init(), ManagedButton:init(), Menu:command_or_event(), Menu:scroll_to(), Menu:update_items(), itable_join(), table_assign(), table_copy() (+4 more)
+### Community 40 - "CycleButton:init"
+Cohesion: 0.50
+Nodes (3): CycleButton:init(), yes_no_to_boolean(), trim()
 
-### Community 40 - "is_protocol() / get_adjacent_files()"
-Cohesion: 0.33
-Nodes (12): string_last_index_of(), ensure_absolute(), get_adjacent_files(), has_any_extension(), is_protocol(), join_path(), normalize_path(), normalize_path_lite() (+4 more)
-
-### Community 42 - "request_render() / Menu:set_scroll_to()"
-Cohesion: 0.18
-Nodes (11): Menu:activate_index(), Menu:deactivate_items(), Menu:handle_cursor_up(), Menu:navigate_action(), Menu:on_global_mouse_move(), Menu:search_trigger(), Menu:select_action(), Menu:select_index() (+3 more)
+### Community 42 - "cursor:trigger"
+Cohesion: 0.67
+Nodes (3): cursor:trigger(), find_active_keybindings(), point_collides_with()
 
 ### Community 43 - "run.lua / _fmt()"
 Cohesion: 0.29
 Nodes (5): _fmt(), harness.eq(), harness.eq_n(), harness.same(), _same()
 
-### Community 44 - "search_items() / utf8_iter()"
-Cohesion: 0.29
-Nodes (9): Menu:search_internal(), search_items(), char_conv(), get_romanization_table(), need_romanization(), character_based_width(), initials(), utf8_iter() (+1 more)
-
-### Community 45 - "text_width() / Timeline:render()"
-Cohesion: 0.29
-Nodes (10): Menu:update_content_dimensions(), Timeline:render(), TopBar:render(), ass_mt:timestamp(), get_cache_stage(), no_remeasure_required(), text_width(), timestamp_width() (+2 more)
-
-### Community 46 - "comma_split() / update_config()"
+### Community 46 - "no-index-seek.lua"
 Cohesion: 0.27
-Nodes (9): get_languages(), get_locale_from_json(), comma_split(), itable_append(), itable_map(), serialize_key_value_list(), serialize_rgba(), update_config() (+1 more)
+Nodes (12): best_jump_point(), djb2_hex(), do_seek(), fast_seek_to(), format_time(), index_path(), load_index(), make_abs_seek() (+4 more)
 
-### Community 50 - "mp.add_timeout() / screenshot()"
-Cohesion: 0.32
-Nodes (7): mp.add_timeout(), on_sid_changed(), safe_name(), screenshot(), timecode(), Menu:init(), Timeline:flash_progress()
-
-### Community 51 - "Controls:init_options() / itable_has()"
-Cohesion: 0.29
-Nodes (7): Controls:init_options(), Curtain:unregister(), Elements:flash(), TopBar:select_current_chapter(), itable_filter(), itable_has(), itable_slice()
+### Community 49 - "zstd.lua"
+Cohesion: 0.20
+Nodes (7): copy_beside(), M.activate(), M.is_beside_video(), djb2_hex(), file_info_of(), fingerprint(), hot_matches_source()
 
 ### Community 52 - "itable_find() / Menu:select_by_offset()"
-Cohesion: 0.29
-Nodes (7): Elements:toggle(), Menu:activate_one_value(), Menu:activate_value(), Menu:delete_value(), Menu:select_by_offset(), Menu:select_value(), itable_find()
-
-### Community 53 - "config.lua / M.load()"
-Cohesion: 0.40
-Nodes (4): M.load(), M.read_dotenv(), mp.get_script_name(), options.read_options()
+Cohesion: 0.25
+Nodes (8): Elements:toggle(), Menu:activate_one_value(), Menu:activate_value(), Menu:delete_value(), Menu:select_by_offset(), Menu:select_value(), TopBar:select_current_chapter(), itable_find()
 
 ### Community 54 - "uosc_picker.lua / M.format_item()"
 Cohesion: 0.60
 Nodes (3): format_score(), M.build_menu(), M.format_item()
 
-### Community 56 - "CycleButton:init() / CycleButton.lua"
-Cohesion: 0.50
-Nodes (3): CycleButton:init(), yes_no_to_boolean(), trim()
+### Community 63 - "sub-lang-filter.lua"
+Cohesion: 0.38
+Nodes (11): announce(), base(), build_allowed(), cycle(), expand(), label(), norm(), on_track_list() (+3 more)
 
-### Community 57 - "wrap_text() / serialize_chapters()"
+### Community 81 - "curl_secrets.lua"
+Cohesion: 0.47
+Nodes (3): M.protect(), M.protect_command(), quote()
+
+### Community 82 - "compare_from_history.py"
+Cohesion: 0.53
+Nodes (4): find_ar_sub(), history_videos(), main(), Path
+
+### Community 84 - "AGENTS.md"
 Cohesion: 0.40
-Nodes (5): normalized_to_real(), opts_factor_offset(), wrap_text(), normalize_chapters(), serialize_chapters()
+Nodes (3): Non-negotiables, Pipeline (see CLAUDE.md for detail), Quick commands
 
-### Community 60 - "Menu:search_cursor_move() / find_string_segment_bound()"
-Cohesion: 0.50
-Nodes (4): Menu:search_cursor_move(), Menu:search_query_backspace(), Menu:search_query_delete(), find_string_segment_bound()
+### Community 85 - "GEMINI.md"
+Cohesion: 0.40
+Nodes (3): Non-negotiables, Pipeline (see CLAUDE.md for detail), Quick commands
 
 ## Knowledge Gaps
-- **55 isolated node(s):** `cuda-crop-cpp executable target`, `nlohmann_json dependency`, `width`, `height`, `x` (+50 more)
+- **62 isolated node(s):** `width`, `height`, `x`, `y`, `crop` (+57 more)
   These have ≤1 connection - possible missing edges or undocumented components.
-- **12 thin communities (<3 nodes) omitted from report** — run `graphify query` to explore isolated nodes.
+- **14 thin communities (<3 nodes) omitted from report** — run `graphify query` to explore isolated nodes.
 
 ## Suggested Questions
 _Questions this graph is uniquely positioned to answer:_
 
-- **Why does `mp.commandv()` connect `mp.commandv() / mp.get_property_native()` to `autosubsync.lua / mp.get_property()`, `memo.lua / show_history()`, `is_protocol() / get_adjacent_files()`, `thumbfast.lua / mp.command_native()`, `text_width() / Timeline:render()`, `cursor.lua / mp.get_time()`, `Volume.lua / Volume:render()`, `comma_split() / update_config()`, `Timeline.lua / load_youtube_heatmap()`, `lib/utils.lua / navigate_playlist()`, `mp.lua / mp.observe_property()`, `CycleButton:init() / CycleButton.lua`, `clamp() / Speed.lua`?**
-  _High betweenness centrality (0.093) - this node is a cross-community bridge._
-- **Why does `mp.get_time()` connect `cursor.lua / mp.get_time()` to `autosubsync.lua / mp.get_property()`, `table_assign() / itable_join()`, `memo.lua / show_history()`, `inputevent.lua / bind_from_options_configs()`, `request_render() / Menu:set_scroll_to()`, `mp.lua / mp.observe_property()`, `Updater.lua / t()`?**
+- **Why does `mp.get_property_native()` connect `mp.get_property_native` to `autosubsync.lua`, `ar_subs.lua`, `mp.commandv() / mp.get_property_native()`, `dynamic-crop.lua`, `memo.lua / show_history()`, `inputevent.lua`, `utils.parse_json`, `mp.command_native`, `cursor:trigger`, `no-index-seek.lua`, `lib/utils.lua`, `std.lua`, `t`, `sub-lang-filter.lua`?**
+  _High betweenness centrality (0.106) - this node is a cross-community bridge._
+- **Why does `mp.command_native()` connect `mp.command_native` to `autosubsync.lua`, `ar_subs.lua`, `dynamic-crop.lua`, `subdl.lua`, `Menu.lua`, `mp.get_property_native`, `inputevent.lua`, `utils.parse_json`, `lib/utils.lua`, `TopBar.lua`, `table_assign`, `Updater.lua`, `t`?**
   _High betweenness centrality (0.068) - this node is a cross-community bridge._
-- **Why does `mp.command_native()` connect `thumbfast.lua / mp.command_native()` to `autosubsync.lua / mp.get_property()`, `table_assign() / itable_join()`, `inputevent.lua / bind_from_options_configs()`, `comma_split() / update_config()`, `mp.add_timeout() / screenshot()`, `lib/utils.lua / navigate_playlist()`, `sponsorblock.lua / mp.osd_message()`, `config.lua / M.load()`, `TopBar.lua / expand_template()`, `mp.lua / mp.observe_property()`, `Updater.lua / t()`?**
-  _High betweenness centrality (0.057) - this node is a cross-community bridge._
+- **Why does `request_render()` connect `request_render` to `text.lua`, `uosc/main.lua`, `Menu.lua`, `memo.lua / show_history()`, `mp.get_property_native`, `cursor.lua`, `Controls.lua`, `Timeline.lua`, `lib/utils.lua`, `itable_find() / Menu:select_by_offset()`, `table_assign`, `Element.lua`, `Updater.lua`, `Elements.lua`, `mp.set_property_native`, `t`?**
+  _High betweenness centrality (0.063) - this node is a cross-community bridge._
+- **Are the 56 inferred relationships involving `mp.get_property_native()` (e.g. with `apply_crop()` and `filter_state()`) actually correct?**
+  _`mp.get_property_native()` has 56 INFERRED edges - model-reasoned connections that need verification._
+- **Are the 52 inferred relationships involving `mp.get_property()` (e.g. with `apply_crop()` and `on_start()`) actually correct?**
+  _`mp.get_property()` has 52 INFERRED edges - model-reasoned connections that need verification._
 - **Are the 38 inferred relationships involving `request_render()` (e.g. with `Controls:update_dimensions()` and `Element:flash()`) actually correct?**
   _`request_render()` has 38 INFERRED edges - model-reasoned connections that need verification._
-- **Are the 33 inferred relationships involving `mp.commandv()` (e.g. with `apply_crop()` and `cleanup()`) actually correct?**
-  _`mp.commandv()` has 33 INFERRED edges - model-reasoned connections that need verification._
-- **Are the 26 inferred relationships involving `mp.get_property()` (e.g. with `apply_crop()` and `on_start()`) actually correct?**
-  _`mp.get_property()` has 26 INFERRED edges - model-reasoned connections that need verification._
-- **Are the 26 inferred relationships involving `mp.get_property_native()` (e.g. with `apply_crop()` and `filter_state()`) actually correct?**
-  _`mp.get_property_native()` has 26 INFERRED edges - model-reasoned connections that need verification._
+- **Are the 36 inferred relationships involving `mp.osd_message()` (e.g. with `on_toggle()` and `switch_hwdec()`) actually correct?**
+  _`mp.osd_message()` has 36 INFERRED edges - model-reasoned connections that need verification._
