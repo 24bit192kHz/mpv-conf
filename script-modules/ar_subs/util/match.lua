@@ -47,6 +47,154 @@ function M.add_pair_meta(pair_set, season_set, se, ep)
   season_set[se] = true
 end
 
+-- ---------------------------------------------------------------------------
+-- Episode identity. One parser for subtitle file names and release names,
+-- one decision for "is this the episode we want", shared by the search
+-- filter, the release ranking and the per-file pick inside packs.
+--
+-- Numbering differs per release: absolute ("Dandadan - 17"), per-season
+-- ("S02E05", "S2 - 05", "2nd Season - 05", "Season 2 Episode 5"), or both
+-- ("Dandadan-17_S2-05"). valid_pairs holds every identity of the target
+-- episode as {[season] = {[episode] = true}}: the TMDB pair, and season 1
+-- for the absolute number. The two rules that keep the wrong episode out:
+--   * an explicit season/episode pair that is not valid rejects the name,
+--     whatever bare numbers it also carries ("Dandadan-16_S2-04" is not
+--     episode 17, although "04" was a cour-guess candidate);
+--   * a bare number counts as a per-season episode only with that season
+--     named ("Dandadan - 05" from a season-1 pack is not S2E05); without a
+--     season it can only be the absolute (season-1) number, unless the
+--     target has a single season anyway (plain TV).
+-- ---------------------------------------------------------------------------
+
+local NAME_EXTS = { srt = true, ass = true, ssa = true, vtt = true, sub = true,
+  zst = true, zip = true, rar = true, ["7z"] = true, txt = true, idx = true,
+  mkv = true, mp4 = true }
+
+local function tag_pair(t, se, ep)
+  se, ep = tonumber(se), tonumber(ep)
+  if not se or not ep or se < 1 or se > MAX_SEASON or ep < 1 or ep > MAX_EPISODE then return end
+  t.pairs[se] = t.pairs[se] or {}
+  t.pairs[se][ep] = true
+end
+
+local function tag_season(t, se)
+  se = tonumber(se)
+  if se and se >= 1 and se <= MAX_SEASON then t.seasons[se] = true end
+end
+
+local function tag_ep(t, ep)
+  ep = tonumber(ep)
+  if ep and ep >= 1 and ep <= MAX_EPISODE then t.eps[ep] = true end
+end
+
+-- episode_tags(name) -> { pairs = {[s]={[e]=true}}, seasons = {[s]=true}, eps = {[e]=true} }
+function M.episode_tags(name)
+  local t = { pairs = {}, seasons = {}, eps = {} }
+  local s = (tostring(name or ""):match("([^/\\]+)$") or ""):lower()
+  while true do
+    local base, ext = s:match("^(.*)%.([%w]+)$")
+    if base and NAME_EXTS[ext] then s = base else break end
+  end
+  -- Digit-carrying noise first, while dots still separate it.
+  s = s:gsub("%d%d%d%d?[pi]%f[%W]", " ")        -- 1080p 2160p 1080i
+  s = s:gsub("%d%d%d%d?x%d%d%d%d?", " ")        -- 1920x1080
+  s = s:gsub("[xh]%.?26[45]", " ")               -- x264 h.265
+  s = s:gsub("%d+[%-%.]?bits?", " ")             -- 10bit 10-bit
+  s = s:gsub("%a+%d%.%d%f[%D]", " ")             -- ddp5.1 aac2.0
+  s = s:gsub("%f[%d]%d%.%d%f[%D]", " ")          -- 5.1 7.1 2.0
+  s = s:gsub("%[%x%x%x%x%x%x%x%x%]", " ")        -- [A1B2C3D4] crc
+  s = s:gsub("%(%d%d%d%d%)", " ")                -- (2019)
+  s = s:gsub("(%d)v%d%f[%W]", "%1")              -- 05v2 -> 05
+  s = s:gsub("[%._]", " ")
+
+  local function take_pair(se, ep) tag_pair(t, se, ep); tag_season(t, se); tag_ep(t, ep); return " " end
+  s = s:gsub("%f[%w]s(%d%d?)%s*%-?%s*episode%s*(%d%d?%d?%d?)%f[%D]", take_pair) -- s4-episode_10
+  s = s:gsub("%f[%w]s(%d%d?)%s*%-?%s*e[p]?%s*(%d%d?%d?%d?)%f[%D]", take_pair)   -- s02e05 s2 ep05
+  s = s:gsub("%f[%w](%d%d?)x(%d%d%d?)%f[%D]", take_pair)                          -- 3x07
+  s = s:gsub("%f[%w]s(%d%d?)%s*%-%s*(%d%d?%d?%d?)%f[%D]", take_pair)             -- s2-04 s2 - 05
+  s = s:gsub("season%s*(%d%d?)%s*%-?%s*e?p?i?s?o?d?e?%s*(%d%d?%d?%d?)%f[%D]", take_pair)
+  s = s:gsub("%f[%w](%d)[snrt][tdh]%s*season%s*%-?%s*(%d%d?%d?%d?)%f[%D]", take_pair) -- 2nd season - 05
+
+  s = s:gsub("%f[%w]s(%d%d?)%f[%W]", function(se) tag_season(t, se); return " " end)
+  s = s:gsub("season%s*(%d%d?)", function(se) tag_season(t, se); return " " end)
+  s = s:gsub("%f[%w](%d)[snrt][tdh]%s*season", function(se) tag_season(t, se); return " " end)
+  -- roman sequel numerals as season ("Mob Psycho 100 II - 05", "Overlord III")
+  for _, r in ipairs({ { "iv", 4 }, { "iii", 3 }, { "ii", 2 } }) do
+    s = s:gsub("%f[%w]" .. r[1] .. "%f[%W]", function() tag_season(t, r[2]); return " " end)
+  end
+
+  s = s:gsub("%f[%w]e[p]?%s*(%d%d?%d?%d?)%f[%D]", function(ep) tag_ep(t, ep); return " " end)
+  s = s:gsub("episode%s*(%d%d?%d?%d?)%f[%D]", function(ep) tag_ep(t, ep); return " " end)
+  for ep in s:gmatch("%f[%w](%d%d?%d?%d?)%f[%W]") do tag_ep(t, ep) end
+  return t
+end
+
+-- episode_verdict(tags, valid_pairs) -> 3 explicit pair match, 2 bare number
+-- in a consistent season context, 1 arc-mode bare match, 0 no episode
+-- information, -1 names a different episode (or is ambiguous between
+-- seasons). valid_pairs[0] is the arc-mode wildcard: the title names an arc
+-- ("Katanakaji no Sato-hen - 10") so the season is unknown and episode N of
+-- any season qualifies -- an explicit pair outranks a bare number there.
+function M.episode_verdict(tags, valid_pairs)
+  valid_pairs = valid_pairs or {}
+  local any = valid_pairs[0]
+  local saw_pair, wild_pair, guess_pair = false, false, false
+  for se, eps in pairs(tags.pairs or {}) do
+    for ep in pairs(eps) do
+      saw_pair = true
+      local v = valid_pairs[se] and valid_pairs[se][ep]
+      if v == true then return 3 end
+      if v == "guess" then
+        -- A guessed pair whose name also carries a different absolute count
+        -- ("Dandadan-16_S2-04" vs episode 17) is that other episode.
+        local contradicted = false
+        for n in pairs(tags.eps or {}) do
+          if n > ep and valid_pairs[1] and not valid_pairs[1][n] then contradicted = true end
+        end
+        if not contradicted then guess_pair = true end
+      end
+      if any and any[ep] then wild_pair = true end
+    end
+  end
+  if wild_pair or guess_pair then return 2 end
+  if saw_pair then return -1 end
+  if any then
+    for ep in pairs(tags.eps or {}) do
+      if any[ep] then return 1 end
+    end
+  end
+
+  local n_seasons, only_season = 0, nil
+  for se in pairs(valid_pairs) do
+    if se > 0 then n_seasons = n_seasons + 1; only_season = se end
+  end
+  local hints = tags.seasons or {}
+  local has_hint = next(hints) ~= nil
+  local saw_ep = false
+  for ep in pairs(tags.eps or {}) do
+    saw_ep = true
+    if has_hint then
+      for se in pairs(hints) do
+        if valid_pairs[se] and valid_pairs[se][ep] then return 2 end
+      end
+      -- "Show S2 - 17": a number past any single cour under a later-season
+      -- label is the continuing absolute count.
+      if ep > 13 and valid_pairs[1] and valid_pairs[1][ep] then return 2 end
+    elseif (valid_pairs[1] and valid_pairs[1][ep])
+        or (n_seasons == 1 and valid_pairs[only_season][ep]) then
+      return 2
+    end
+  end
+  if saw_ep then return -1 end
+  return 0
+end
+
+-- Tags from a search-result row: API season/episode fields plus its name.
+function M.release_tags(sub)
+  M.normalize_subtitle_metadata(sub)
+  return { pairs = sub._norm_pairs or {}, seasons = sub._norm_seasons or {}, eps = sub._norm_eps or {} }
+end
+
 function M.normalize_subtitle_metadata(sub)
   if type(sub) ~= "table" then return end
   if sub._meta_parsed then return end
@@ -82,27 +230,14 @@ function M.normalize_subtitle_metadata(sub)
     sub._is_pack = true
   end
 
-  local rn = (sub.release_name or ""):lower()
+  local rn = sub.release_name or ""
   if rn ~= "" then
-    for s, e in rn:gmatch("s(%d+)%s*[%._%- ]*e[p]?[%._%- ]*(%d+)") do
-      M.add_pair_meta(pair_set, season_set, s, e)
+    local t = M.episode_tags(rn)
+    for s, eps in pairs(t.pairs) do
+      for e in pairs(eps) do M.add_pair_meta(pair_set, season_set, s, e) end
     end
-    for s, e in rn:gmatch("(%d+)[xX](%d+)") do
-      M.add_pair_meta(pair_set, season_set, s, e)
-    end
-    for s, e in rn:gmatch("season%s*(%d+)[^%d]+e[p]?[%._%- ]*(%d+)") do
-      M.add_pair_meta(pair_set, season_set, s, e)
-    end
-    for s, e in rn:gmatch("season%s*(%d+)%s*[%._%- ]*(%d+)%f[%D]") do
-      M.add_pair_meta(pair_set, season_set, s, e)
-    end
-    for s, e in rn:gmatch("s(%d+)%s*[%._%- ]*(%d+)%f[%D]") do
-      M.add_pair_meta(pair_set, season_set, s, e)
-    end
-
-    for e in rn:gmatch("episode%s*(%d+)") do M.add_episode_meta(ep_set, e) end
-    for e in rn:gmatch("e[p]?[%._%- ]*(%d+)") do M.add_episode_meta(ep_set, e) end
-    for e in rn:gmatch("%-%s*(%d+)%f[%D]") do M.add_episode_meta(ep_set, e) end
+    for s in pairs(t.seasons) do season_set[s] = true end
+    for e in pairs(t.eps) do M.add_episode_meta(ep_set, e) end
   end
 
   sub._norm_pairs = pair_set
@@ -159,7 +294,7 @@ end
 -- when no TMDB id is available).
 M._tmdb_season_info = nil
 
-function M.calculate_cour_mappings(absolute_episode, tmdb_id, detected_season)
+function M.calculate_cour_mappings(absolute_episode, tmdb_id, detected_season, season_unknown)
   local mappings = {}
   local seen = {}
 
@@ -167,7 +302,7 @@ function M.calculate_cour_mappings(absolute_episode, tmdb_id, detected_season)
     season_num = tonumber(season_num)
     episode_num = tonumber(episode_num)
     if not season_num or not episode_num then return end
-    if season_num < 1 or episode_num < 1 or episode_num > MAX_EPISODE then return end
+    if season_num < 0 or episode_num < 1 or episode_num > MAX_EPISODE then return end
     local key = season_num .. "_" .. episode_num
     if not seen[key] then
       seen[key] = true
@@ -175,56 +310,132 @@ function M.calculate_cour_mappings(absolute_episode, tmdb_id, detected_season)
     end
   end
 
-  -- Always include absolute episode as S1.
-  add_mapping(1, absolute_episode)
-
-  -- If we have TMDB data, calculate canonical season mapping.
+  local episode = tonumber(absolute_episode)
+  if not episode then return mappings end
+  detected_season = tonumber(detected_season)
   local seasons = tmdb_id and M._tmdb_season_info and M._tmdb_season_info(tmdb_id)
-  if seasons then
+
+  -- TMDB's episode counts turn an absolute number into (season, episode),
+  -- and (season, episode) back into the absolute number.
+  local function tmdb_pair_for(abs)
+    if not seasons then return nil end
     local cumulative = 0
     for s = 1, 10 do
       local ep_count = seasons[s]
-      if not ep_count or ep_count == 0 then break end
-
-      if absolute_episode > cumulative and absolute_episode <= cumulative + ep_count then
-        local relative_ep = absolute_episode - cumulative
-        add_mapping(s, relative_ep)
-        mp.msg.info(string.format("TMDB cour mapping: E%d → S%dE%d", absolute_episode, s, relative_ep))
-        break
+      if not ep_count or ep_count == 0 then return nil end
+      if abs > cumulative and abs <= cumulative + ep_count then
+        return s, abs - cumulative
       end
       cumulative = cumulative + ep_count
     end
+    return nil
+  end
+  local cours = seasons and seasons.cours or {}
+  local function tmdb_abs_for(season_num, ep)
+    if not seasons then return nil end
+    local cumulative, s = 0, 1
+    while s < season_num and seasons[s] and seasons[s] > 0 do
+      cumulative = cumulative + seasons[s]
+      s = s + 1
+    end
+    if s == season_num and seasons[s] then
+      return ep <= seasons[s] and cumulative + ep or nil
+    end
+    -- A provider season past TMDB's last one is a later cour of it: Dan Da
+    -- Dan's "S2E05" is cour 2 of TMDB's single season = episode 17.
+    local last = s - 1
+    local starts = last >= 1 and cours[last]
+    local k = season_num - last
+    if starts and starts[k] then
+      return cumulative - seasons[last] + starts[k] - 1 + ep
+    end
+    return nil
+  end
+  -- Cour-as-season label of a TMDB pair: episode 17 of a 24-episode season
+  -- whose second cour starts at 13 is the provider's S2E05. Only when TMDB
+  -- has no real next season that the label would collide with.
+  local function cour_label_for(s, e)
+    local starts = cours[s]
+    if not starts or seasons[s + 1] then return nil end
+    local k = 0
+    for i, b in ipairs(starts) do if e >= b then k = i end end
+    if k == 0 then return nil end
+    return s + k, e - starts[k] + 1
   end
 
-  -- Add fallback cour guesses because SubDL seasoning often differs from TMDB.
+  if detected_season and detected_season > 1 then
+    -- The file names its season ("Show S2 - 05", "S02E05"): the number is
+    -- per-season. Its absolute twin is only known through TMDB; guessing
+    -- (1, 5) would accept season-1 "Show - 05" subtitles for S2E05.
+    add_mapping(detected_season, episode)
+    local abs = tmdb_abs_for(detected_season, episode)
+    if abs then
+      add_mapping(1, abs)
+    elseif episode > 13 then
+      -- past any single cour: a continuing absolute count under a season label
+      add_mapping(1, episode)
+      local s, e = tmdb_pair_for(episode)
+      if s then add_mapping(s, e) end
+    end
+    mp.msg.info(string.format("Cour mappings: %d candidates for S%dE%d", #mappings, detected_season, episode))
+    return mappings
+  end
+
+  -- Arc-named title ("Kimetsu no Yaiba Katanakaji no Sato-hen - 10") that is
+  -- not the TMDB show name: the number counts within an arc whose season
+  -- providers label differently (Swordsmith Village is S3 on TMDB, S4 on
+  -- Crunchyroll). Neither the absolute reading (S1E10) nor a TMDB mapping
+  -- holds; accept episode N of any season (season 0 = wildcard).
+  if season_unknown then
+    add_mapping(0, episode)
+    mp.msg.info(string.format("Cour mappings: season unknown (arc title), any season E%d", episode))
+    return mappings
+  end
+
+  -- No season in the name: absolute numbering (identical to S1 per-season
+  -- numbering for the first season).
+  add_mapping(1, episode)
+  local s, e = tmdb_pair_for(episode)
+  if s then
+    add_mapping(s, e)
+    local cs, ce = cour_label_for(s, e)
+    if cs then add_mapping(cs, ce) end
+    mp.msg.info(string.format("TMDB cour mapping: E%d → S%dE%d%s", episode, s, e,
+      cs and string.format(" (cour label S%dE%d)", cs, ce) or ""))
+    -- TMDB placed it: the cour-length guesses below would only add wrong
+    -- episodes (Dandadan E17 = S2E05; the 13-episode guess made S2E04 valid
+    -- and loaded episode 16's subtitle).
+    mp.msg.info(string.format("Cour mappings: %d candidates for E%d", #mappings, episode))
+    return mappings
+  end
+
+  -- No TMDB data: cour guesses, because provider seasoning often differs.
   local boundaries = {12, 13, 23, 24, 25}
-  local function add_fallback(s, ep)
-    if ep > 0 and ep <= 26 and s >= 2 and s <= 5 then
-      add_mapping(s, ep)
+  local function add_fallback(season_num, ep)
+    if ep > 0 and ep <= 26 and season_num >= 2 and season_num <= 5 then
+      local before = #mappings
+      add_mapping(season_num, ep)
+      if #mappings > before then mappings[#mappings].guess = true end
     end
   end
 
   for _, b in ipairs(boundaries) do
-    if absolute_episode > b then add_fallback(2, absolute_episode - b) end
+    if episode > b then add_fallback(2, episode - b) end
   end
 
   local s2_totals = {24, 25, 36, 37, 47, 48, 49, 50}
   for _, total in ipairs(s2_totals) do
-    if absolute_episode > total then add_fallback(3, absolute_episode - total) end
+    if episode > total then add_fallback(3, episode - total) end
   end
 
-  if absolute_episode > 60 then
+  if episode > 60 then
     local s3_totals = {60, 71, 72, 73}
     for _, total in ipairs(s3_totals) do
-      if absolute_episode > total then add_fallback(4, absolute_episode - total) end
+      if episode > total then add_fallback(4, episode - total) end
     end
   end
 
-  if detected_season and detected_season > 1 then
-    add_mapping(detected_season, absolute_episode)
-  end
-
-  mp.msg.info(string.format("Cour mappings: %d candidates for E%d", #mappings, absolute_episode))
+  mp.msg.info(string.format("Cour mappings: %d candidates for E%d", #mappings, episode))
   return mappings
 end
 
@@ -237,7 +448,11 @@ function M.build_valid_mapping_sets(cour_mappings)
     if m and m.season and m.ep then
       valid_eps[m.ep] = true
       valid_pairs[m.season] = valid_pairs[m.season] or {}
-      valid_pairs[m.season][m.ep] = true
+      -- "guess": a cour-length guess made without TMDB data (weaker than a
+      -- mapping, see episode_verdict); never downgrade a real mapping.
+      if valid_pairs[m.season][m.ep] ~= true then
+        valid_pairs[m.season][m.ep] = m.guess and "guess" or true
+      end
       valid_seasons[m.season] = true
     end
   end
@@ -259,6 +474,15 @@ function M.find_matching_episode_file(sub_files, season, episode, valid_episodes
     valid_episodes = { [episode] = true }
   end
 
+  -- Target identities for episode_verdict: callers without cour data get
+  -- the plain (season, episode) plus any extra valid episode numbers.
+  local verdict_pairs = valid_pairs
+  if not verdict_pairs then
+    local s = season or 1
+    verdict_pairs = { [s] = { [episode] = true } }
+    for e in pairs(valid_episodes) do verdict_pairs[s][e] = true end
+  end
+
   local target_season_count = 0
   if valid_pairs then
     for _ in pairs(valid_pairs) do target_season_count = target_season_count + 1 end
@@ -273,6 +497,13 @@ function M.find_matching_episode_file(sub_files, season, episode, valid_episodes
     -- Normalize away revision tags ("01v2" -> "01") so the episode number
     -- survives; parsing runs on this copy, display keeps the original name.
     local filename_lower = filename:lower():gsub("(%d)v%d+", "%1")
+    -- Gate first: a name that is not this episode (or is ambiguous between
+    -- seasons) never competes, whatever its score below would have been.
+    local verdict = M.episode_verdict(M.episode_tags(filename), verdict_pairs)
+    if verdict < 1 then
+      mp.msg.debug(string.format("ar_subs: file='%s' rejected (episode verdict %d)", filename, verdict))
+      goto next_file
+    end
 
     local score = 0
     local ep_candidates = {}
@@ -446,13 +677,19 @@ function M.find_matching_episode_file(sub_files, season, episode, valid_episodes
     if #ep_candidates > 1 then score = score - 10 end
     if #se_candidates > 1 then score = score - 5 end
 
-    mp.msg.debug(string.format("ar_subs: file='%s' → eps=%d candidates, seas=%d candidates → score=%d", 
+    -- An explicit pair outranks a bare number; the legacy score only breaks
+    -- ties (quality, pack penalties). Verdict-gated names are the episode,
+    -- so they no longer need MIN_MATCH_SCORE.
+    score = math.max(score, MIN_MATCH_SCORE) + verdict * 1000
+
+    mp.msg.debug(string.format("ar_subs: file='%s' → eps=%d candidates, seas=%d candidates → score=%d",
         filename, #ep_candidates, #se_candidates, score))
 
     if score > best_score then
       best_score = score
       best_match = sub_file
     end
+    ::next_file::
   end
 
   if best_match and best_score >= MIN_MATCH_SCORE then

@@ -60,7 +60,30 @@ local dedupe_queries = media_util.dedupe_queries
 local extract_series_info = media_util.extract_series_info
 local extract_anime_info = media_util.extract_anime_info
 local extract_movie_info = media_util.extract_movie_info
-local resolve_media_info = media_util.resolve_media_info
+-- Most anime has no "[Group]" prefix ("Solo.Leveling.S02E03..."), so the
+-- file name alone reads as TV and the absolute-numbered subtitles of that
+-- episode ("Solo Leveling - 15") are never considered. The playing file
+-- itself says anime: anime_detect's verdict or a Japanese audio track.
+local function playing_file_is_anime(path)
+    if not path or path ~= mp.get_property("path") then return false end
+    if mp.get_property("user-data/anime_detect/is_anime") == "1" then return true end
+    for _, t in ipairs(mp.get_property_native("track-list") or {}) do
+        local lang = (t.lang or ""):lower()
+        if t.type == "audio" and (lang == "ja" or lang == "jpn" or lang:sub(1, 3) == "ja-") then
+            return true
+        end
+    end
+    return false
+end
+
+local function resolve_media_info(path, video_name)
+    local info = media_util.resolve_media_info(path, video_name)
+    if info.content_type == "tv" and info.episode and playing_file_is_anime(path) then
+        info.content_type = "anime"
+        info.is_anime = true
+    end
+    return info
+end
 local classify_content_type = media_util.classify_content_type
 local normalize_path_key = media_util.normalize_path_key
 local normalize_stem_key = media_util.normalize_stem_key
@@ -723,6 +746,10 @@ local function load_media_catalog()
 end
 
 -- Unified TMDB lookup for both TV and movies
+-- tmdb id -> { name, original_name } of the search hit, to tell a plain
+-- show title from an arc-named one (see anime_season_unknown).
+local tmdb_names = {}
+
 local function get_tmdb_id(media_type, title, year)
     if not title or title == "" then return nil end
     
@@ -730,7 +757,9 @@ local function get_tmdb_id(media_type, title, year)
     local cache_key = media_type .. ":" .. title:lower() .. (year or "")
     if tmdb_cache[cache_key] then
         mp.msg.info("TMDB: using cached ID for", title)
-        return tmdb_cache[cache_key].id, tmdb_cache[cache_key].type
+        local hit = tmdb_cache[cache_key]
+        if hit.names then tmdb_names[tostring(hit.id)] = hit.names end
+        return hit.id, hit.type
     end
     
     -- Build query based on media type
@@ -746,7 +775,10 @@ local function get_tmdb_id(media_type, title, year)
     local json = http_get_json(query)
     if json and json.results and #json.results > 0 then
         local first_result = json.results[1]
-        tmdb_cache[cache_key] = { id = first_result.id, type = media_type }
+        local names = { first_result.name or first_result.title or "",
+                        first_result.original_name or first_result.original_title or "" }
+        tmdb_names[tostring(first_result.id)] = names
+        tmdb_cache[cache_key] = { id = first_result.id, type = media_type, names = names }
         cache_mod.schedule_save()
         mp.msg.info("TMDB ID found:", first_result.id, "Type:", media_type)
         return first_result.id, media_type
@@ -784,33 +816,114 @@ local function get_tmdb_id_candidates(media_type, titles, year)
     return nil
 end
 
+-- The episode number of an anime file is absolute (or per-season with a
+-- stated season) only when the title IS the show. "Kimetsu no Yaiba
+-- Katanakaji no Sato-hen - 10", "Jujutsu Kaisen - Shimetsu Kaiyuu - Zenpen
+-- - 01" and "Dr. STONE - Stone Wars - 01" name an arc: the number counts
+-- inside it and its season is unknown. Letters+digits only, so "Dandadan"
+-- still matches TMDB's "DAN DA DAN".
+local function squash(t) return (tostring(t or ""):lower():gsub("[^%w]", "")) end
+
+local function anime_season_unknown(media, tmdb_id)
+    if not media or media.season_explicit then return false end
+    local names = tmdb_id and tmdb_names[tostring(tmdb_id)]
+    if not names then return false end
+    local title = squash(media.title)
+    if title == "" then return false end
+    for _, n in ipairs(names) do
+        local sn = squash(n)
+        if sn ~= "" and sn:find(title, 1, true) then return false end
+    end
+    mp.msg.info(string.format("ar_subs: '%s' is not the TMDB show name (%s): arc title, season unknown",
+        tostring(media.title), tostring(names[1])))
+    return true
+end
+
 -- Get season info from TMDB to calculate cour mappings (with caching)
+-- The season cache round-trips through JSON (cache.json), which turns every
+-- key into a string: {"1": 24}. Lookups index seasons[1], so a cached entry
+-- used to read as "no seasons" and every session after the first fell back
+-- to cour guesses. Normalize keys back to numbers on every read.
+local function numeric_season_info(t)
+    if type(t) ~= "table" then return nil end
+    local out = {}
+    for k, v in pairs(t) do
+        if k == "cours" and type(v) == "table" then
+            out.cours = {}
+            for s, list in pairs(v) do
+                local starts = {}
+                for _, b in pairs(list) do starts[#starts + 1] = tonumber(b) end
+                table.sort(starts)
+                out.cours[tonumber(s)] = starts
+            end
+        elseif k == "v" then
+            out.v = tonumber(v)
+        elseif tonumber(k) then
+            out[tonumber(k)] = tonumber(v)
+        end
+    end
+    return out
+end
+
+-- Episode counts per season, plus cour starts inside long seasons. TMDB
+-- files Dan Da Dan as one 24-episode season, providers as S1/S2: the
+-- 196-day air-date gap before episode 13 is where the second cour (their
+-- "S2") starts, so S2E05 = episode 17 without guessing 12 vs 13.
+local SEASON_INFO_VERSION = 2
+local COUR_GAP_DAYS = 60
+
+local function air_day(date)
+    local y, m, d = tostring(date or ""):match("^(%d%d%d%d)%-(%d%d)%-(%d%d)")
+    if not y then return nil end
+    return os.time({ year = tonumber(y), month = tonumber(m), day = tonumber(d), hour = 12 }) / 86400
+end
+
 local function get_tmdb_season_info(tmdb_id)
     if not tmdb_id then return nil end
-    
+
     local key = tostring(tmdb_id)
-    if tmdb_season_cache[key] then
+    local cached = numeric_season_info(tmdb_season_cache[key])
+    if cached and cached.v == SEASON_INFO_VERSION then
         mp.msg.info("TMDB: using cached season info for ID", tmdb_id)
-        return tmdb_season_cache[key]
+        return cached
     end
-    
-    local query = string.format("%s/tv/%s?api_key=%s", 
+
+    local query = string.format("%s/tv/%s?api_key=%s",
                                 TMDB_API_URL, tmdb_id, TMDB_API_KEY)
-    
+
     local json = http_get_json(query)
     if not json or not json.seasons then
-        return nil
+        return cached
     end
-    
+
     -- Build episode count per season (excluding season 0 which is specials)
-    local seasons = {}
+    local seasons = { v = SEASON_INFO_VERSION, cours = {} }
     for _, season in ipairs(json.seasons) do
         if season.season_number and season.season_number > 0 then
             seasons[season.season_number] = season.episode_count or 0
         end
     end
-    
-    tmdb_season_cache[tostring(tmdb_id)] = seasons
+    for s, count in pairs(seasons) do
+        if type(s) == "number" and count > 13 then
+            local sj = http_get_json(string.format("%s/tv/%s/season/%d?api_key=%s",
+                TMDB_API_URL, tmdb_id, s, TMDB_API_KEY))
+            local prev, starts = nil, {}
+            for _, ep in ipairs(sj and sj.episodes or {}) do
+                local day = air_day(ep.air_date)
+                if prev and day and day - prev > COUR_GAP_DAYS and tonumber(ep.episode_number) then
+                    starts[#starts + 1] = tonumber(ep.episode_number)
+                end
+                prev = day or prev
+            end
+            if #starts > 0 then
+                seasons.cours[s] = starts
+                mp.msg.info(string.format("TMDB: season %d has cours starting at E%s", s, table.concat(starts, ",E")))
+            end
+        end
+    end
+
+    tmdb_season_cache[key] = seasons
+    cache_mod.schedule_save()
     return seasons
 end
 
@@ -1166,7 +1279,7 @@ local function fetch_sub_list_anime(title, season, episode, tmdb_id, opts)
         cour_mappings = { { season = tr.season, ep = tr.episode } }
         mp.msg.info(string.format("TVDB: using resolved mapping S%dE%d for E%d", tr.season, tr.episode, episode))
     else
-        cour_mappings = calculate_cour_mappings(episode, tmdb_id, season)
+        cour_mappings = calculate_cour_mappings(episode, tmdb_id, season, opts.season_unknown)
     end
     local valid_eps, valid_pairs, valid_seasons = build_valid_mapping_sets(cour_mappings)
 
@@ -1180,7 +1293,7 @@ local function fetch_sub_list_anime(title, season, episode, tmdb_id, opts)
     if sd_id then
         for i = 1, max_mapping_queries do
             local m = cour_mappings[i]
-            if m then
+            if m and m.season > 0 then
                 add(string.format("type=tv&sd_id=%s&season_number=%d&episode_number=%d", sd_id, m.season, m.ep))
             end
         end
@@ -1188,7 +1301,7 @@ local function fetch_sub_list_anime(title, season, episode, tmdb_id, opts)
     elseif tmdb_id then
         for i = 1, max_mapping_queries do
             local m = cour_mappings[i]
-            if m then
+            if m and m.season > 0 then
                 add(string.format("type=tv&tmdb_id=%s&season_number=%d&episode_number=%d", tmdb_id, m.season, m.ep))
             end
         end
@@ -1197,7 +1310,7 @@ local function fetch_sub_list_anime(title, season, episode, tmdb_id, opts)
 
     for i = 1, max_mapping_queries do
         local m = cour_mappings[i]
-        if m then
+        if m and m.season > 0 then
             add("film_name=" .. url_safe(string.format("%s S%02dE%02d", title, m.season, m.ep)))
         end
     end
@@ -1215,44 +1328,13 @@ local function fetch_sub_list_anime(title, season, episode, tmdb_id, opts)
     queries = dedupe_queries(queries)
     if not DEEP_SEARCH then queries = limit_queries(queries, 10) end
 
+    -- Same episode decision as the per-file pick (util/match.lua): an
+    -- explicit pair must be valid, a bare number needs its season named
+    -- unless it is the absolute count. Rows with no episode information at
+    -- all stay as a last-resort fallback.
     local function subtitle_matches_cour(sub)
-        local se = tonumber(sub.season_number)
-        local ep = tonumber(sub.episode_number)
-
-        if se and ep then
-            return valid_pairs[se] and valid_pairs[se][ep] or false
-        end
-
-        local pair_map = sub._norm_pairs or {}
-        local saw_pair = false
-        for se_num, ep_set in pairs(pair_map) do
-            saw_pair = true
-            if valid_pairs[se_num] then
-                for ep_num in pairs(ep_set) do
-                    if valid_pairs[se_num][ep_num] then
-                        return true
-                    end
-                end
-            end
-        end
-        if saw_pair then return false end
-
-        if ep then
-            return valid_eps[ep] or false
-        end
-
-        local ep_set = sub._norm_eps or {}
-        local saw_ep = false
-        for ep_num in pairs(ep_set) do
-            saw_ep = true
-            if valid_eps[ep_num] then
-                return true
-            end
-        end
-        if saw_ep then return false end
-
-        -- Keep ambiguous no-metadata rows as a last-resort fallback.
-        return true
+        local verdict = match_util.episode_verdict(match_util.release_tags(sub), valid_pairs)
+        return verdict >= 1 or verdict == 0
     end
 
     -- Season-level raw pool is episode-independent (SubDL season queries
@@ -1276,27 +1358,13 @@ local function fetch_sub_list_anime(title, season, episode, tmdb_id, opts)
         local season_set = sub._norm_seasons or {}
         local eps = sub._norm_eps or {}
 
-        local has_pair_match = false
-        local has_episode_match = false
-
-        for se, ep_set in pairs(pair_set) do
-            for ep in pairs(ep_set) do
-                if valid_pairs[se] and valid_pairs[se][ep] then
-                    has_pair_match = true
-                    break
-                end
-            end
-            if has_pair_match then break end
-        end
-
-        if not has_pair_match then
-            for ep in pairs(eps) do
-                if valid_eps[ep] then
-                    has_episode_match = true
-                    break
-                end
-            end
-        end
+        local verdict = match_util.episode_verdict(match_util.release_tags(sub), valid_pairs)
+        -- arc mode (valid_pairs[0]): any season is the right season, so the
+        -- wrong-season penalties below do not apply; a stated season still
+        -- outranks a bare number (verdict 2 vs 1).
+        local arc_mode = valid_pairs[0] ~= nil
+        local has_pair_match = verdict == 3 or (arc_mode and verdict == 2)
+        local has_episode_match = verdict >= 1
 
         if has_pair_match then
             score = score + 12000
@@ -1325,10 +1393,10 @@ local function fetch_sub_list_anime(title, season, episode, tmdb_id, opts)
             end
         end
 
-        if has_wrong_season and not has_pair_match then
+        if has_wrong_season and not has_pair_match and not arc_mode then
             score = score - 900
         end
-        if has_known_season_wrong_ep and not has_pair_match then
+        if has_known_season_wrong_ep and not has_pair_match and not arc_mode then
             score = score - 450
         end
 
@@ -1398,9 +1466,12 @@ local function fetch_sub_list(video_name)
             local tvdb_result = tvdb_resolve_episode_sync(media.title, media.episode)
             subs_list = fetch_sub_list_anime(media.title, media.season or 1, media.episode, tmdb_id, {
                 tvdb_result = tvdb_result,
+                season_unknown = anime_season_unknown(media, tmdb_id),
             })
         else
-            subs_list = fetch_sub_list_anime(media.title, media.season or 1, media.episode, tmdb_id)
+            subs_list = fetch_sub_list_anime(media.title, media.season or 1, media.episode, tmdb_id, {
+                season_unknown = anime_season_unknown(media, tmdb_id),
+            })
         end
     elseif media.content_type == "tv" and media.title and media.season and media.episode then
         mp.msg.info(string.format("Searching for TV show: %s S%02dE%02d", media.title, media.season, media.episode))
@@ -1753,7 +1824,8 @@ local function fetch_next_sub(opts)
     
     local valid_episodes, valid_pairs = nil, nil
     if is_anime and episode then
-        local cour_mappings = calculate_cour_mappings(episode, tmdb_id, season)
+        local cour_mappings = calculate_cour_mappings(episode, tmdb_id, season,
+            anime_season_unknown(media, tmdb_id))
         valid_episodes, valid_pairs = build_valid_mapping_sets(cour_mappings)
     end
     
@@ -2018,11 +2090,13 @@ local function check_existing_season_files(show_title, season, episode)
         if target_file and utils.file_info(target_file) then
             -- Validate persisted/indexed entries before loading them. A stale
             -- cache entry with a generic or unrelated filename must not win
-            -- merely because its table key happens to be SxxExx.
-            local valid_episodes = {[tonumber(episode)] = true}
-            local valid_pairs = {[tonumber(season)] = {[tonumber(episode)] = true}}
-            local matched = find_matching_episode_file(
-                {target_file}, season, episode, valid_episodes, valid_pairs)
+            -- merely because its table key happens to be SxxExx. The entry
+            -- was picked for this key by the full cour-aware pipeline, so
+            -- only require the name to carry the episode number: strict
+            -- per-season rules here rejected arc picks ("demon_slayer_s4-
+            -- episode_10" under S01E10) on every play, while "16_S2-04"
+            -- cached for E17 still fails.
+            local matched = match_util.episode_tags(target_file).eps[tonumber(episode)]
             if not matched then
                 mp.msg.warn(string.format(
                     "ar_subs: ignoring stale cached subtitle for %s S%02dE%02d: %s",
@@ -2613,7 +2687,8 @@ local function handle_manual_search(query)
         local extra_candidates = path_title_candidates(path)
         local candidates = merge_candidates(normalize_title_candidates(media.title), extra_candidates)
         local tmdb_id = get_tmdb_id_candidates("tv", candidates)
-        local cour_mappings = calculate_cour_mappings(dl_episode, tmdb_id, dl_season)
+        local cour_mappings = calculate_cour_mappings(dl_episode, tmdb_id, dl_season,
+            anime_season_unknown(media, tmdb_id))
         valid_episodes, valid_pairs = build_valid_mapping_sets(cour_mappings)
     end
 
@@ -2693,7 +2768,8 @@ mp.register_script_message("ar_subs_download_item", function(index)
         local extra_candidates = path_title_candidates(path)
         local candidates = merge_candidates(normalize_title_candidates(media.title), extra_candidates)
         local tmdb_id = get_tmdb_id_candidates("tv", candidates)
-        local cour_mappings = calculate_cour_mappings(dl_episode, tmdb_id, dl_season)
+        local cour_mappings = calculate_cour_mappings(dl_episode, tmdb_id, dl_season,
+            anime_season_unknown(media, tmdb_id))
         valid_episodes, valid_pairs = build_valid_mapping_sets(cour_mappings)
     end
 

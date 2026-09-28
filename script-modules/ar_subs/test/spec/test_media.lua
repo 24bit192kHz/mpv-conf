@@ -124,3 +124,21 @@ H.eq("resolve TV S01E01", resolve_summary(media.resolve_media_info("/mnt/z/Break
 H.eq("resolve anime [Group]", resolve_summary(media.resolve_media_info("/mnt/z/[Erai-raws] Foo - 01 [1080p].mkv", nil)), "anime|title=Foo|s=1|e=1|anime=true")
 H.eq("resolve TV 1x05", resolve_summary(media.resolve_media_info("/mnt/z/My.Show.1x05.WEB-DL.mkv", nil)), "tv|title=My Show|s=1|e=5|anime=false")
 H.ok("resolve filename fallback when basename nil", media.resolve_media_info(nil, "Fallback.S01E01.mkv").filename == "Fallback.S01E01.mkv")
+
+-- season_explicit: only a stated season (name or "Season NN" folder) makes the
+-- number per-season; a bare "Show - 17" is absolute.
+do
+  local i = media.resolve_media_info("/m/arch/[ASW] Dandadan - 17 [1080p HEVC][9263DB93].mkv")
+  H.eq_n("resolve Dandadan - 17: anime, absolute", { i.content_type, i.season, i.episode, i.season_explicit }, { "anime", 1, 17, false })
+  local d = media.resolve_media_info("/m/[Breeze] Dr. STONE [1080p BD]/Season 02/[Breeze] Dr. STONE - Stone Wars - 01 [1080p BD][AV1][dual audio].mkv")
+  H.eq_n("resolve Season 02 folder states the season", { d.content_type, d.season, d.episode, d.season_explicit }, { "anime", 2, 1, true })
+  local g = media.resolve_media_info("/m/2a. 2nd Gig (2004-05)/Ghost in the Shell (S.A.C) - S02 E06 - DI - Excavation (1080p - DUAL Audio).mkv")
+  H.eq_n("resolve spaced S02 E06 is explicit", { g.season, g.episode, g.season_explicit }, { 2, 6, true })
+  local t = media.resolve_media_info("/m/Mad.Men.S01E10.Long.Weekend.REPACK.2160p.HMAX.WEB-DL.DDP5.1.H.265-WADU.mkv")
+  H.eq_n("resolve TV S01E10", { t.content_type, t.season, t.episode, t.season_explicit }, { "tv", 1, 10, true })
+end
+do
+  local a = media.resolve_media_info("/m/anime/The Apothecary Diaries S01 1080p Dual Audio BDRip 10 bits DD+_AAC x265-EMBER/S01E06-The Garden Party [A54A6CBE].mkv")
+  H.eq_n("resolve SxxEyy-only name takes the folder's show", { a.content_type, a.title, a.season, a.episode }, { "tv", "The Apothecary Diaries", 1, 6 })
+  H.eq_n("anime dotted Title.E24", { media.extract_anime_info("One.Outs.E24.Jap.DVD.Rip[720p].ENG.subs.(2009).mkv") }, { "One.Outs", nil, 24, nil })
+end

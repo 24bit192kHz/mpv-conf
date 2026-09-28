@@ -290,7 +290,7 @@ end
 function M.extract_anime_info(filename)
   -- Must start with [Group] tag OR look very much like an anime file (e.g. Title E01 without S01)
   local has_group = filename:match("^%[.-%]")
-  local has_anime_pattern = filename:match(" E%d+") or filename:match(" %- %d+")
+  local has_anime_pattern = filename:match("[ %.]E%d+") or filename:match(" %- %d+")
 
   if not has_group and not has_anime_pattern then return nil, nil, nil, nil end
 
@@ -349,7 +349,8 @@ function M.extract_anime_info(filename)
 
   -- Pattern 5: "Title E01" (No Season), or spaced "Title - S02 E06"
   -- (GITS 2nd Gig): keep the season clean() strips, like Pattern 2 does.
-  title, episode = s:match("^(.+) E(%d+)")
+  -- Dots count as separators too ("One.Outs.E24.Jap.DVD.Rip").
+  title, episode = s:match("^(.+)[ %.]E(%d+)%f[%D]")
   if title then
     local ts = title:match(" S(%d+)$")
     title, year = clean(title)
@@ -432,6 +433,22 @@ function M.extract_movie_info(filename)
   return title, year
 end
 
+-- Show name at the head of a release folder: everything before the first
+-- season/resolution/source/codec token or bracket ("The Apothecary Diaries
+-- S01 1080p Dual Audio BDRip ..." -> "The Apothecary Diaries").
+local RELEASE_TAIL = { "%s[Ss]%d%d?%f[%W]", "%s%d%d%d%d?[pP]%f[%W]", "%s[Ss]eason%s", "%s[%[%(]",
+  "%s[Bb][Dd][Rr]ip", "%s[Ww][Ee][Bb]", "%s[Bb]lu%-?[Rr]ay", "%s[Dd]ual%s", "%s[xXhH]26[45]",
+  "%s[Hh][Ee][Vv][Cc]", "%s%d+%s?[Bb]its?" }
+function M.release_head(name)
+  local s = " " .. tostring(name or ""):gsub("[._]", " ") .. " "
+  local cut = #s + 1
+  for _, pat in ipairs(RELEASE_TAIL) do
+    local i = s:find(pat)
+    if i and i < cut then cut = i end
+  end
+  return (s:sub(1, cut - 1):match("^%s*(.-)%s*$"))
+end
+
 function M.resolve_media_info(path, video_name)
   local filename = url_util.basename(path or "") or video_name or ""
   local type_hint, hint_source = M.classify_content_type(path)
@@ -483,6 +500,9 @@ function M.resolve_media_info(path, video_name)
       info.content_type = "anime"
       info.title = t
       info.season = s or 1
+      -- Only a season the name states makes the number per-season; a bare
+      -- "Show - 17" is absolute (or, on an arc-named title, unknown).
+      info.season_explicit = s ~= nil
       info.episode = e
       info.year = y
       info.is_anime = true
@@ -497,6 +517,7 @@ function M.resolve_media_info(path, video_name)
       info.content_type = "tv"
       info.title = t
       info.season = s
+      info.season_explicit = true
       info.episode = e
       info.is_anime = false
       return true
@@ -535,6 +556,22 @@ function M.resolve_media_info(path, video_name)
     if kind == "movie" and set_movie() then break end
   end
 
+  -- "Show S01 1080p .../S01E06-Episode Title.mkv": the name carries only the
+  -- episode; the show is the folder (The Apothecary Diaries release).
+  if info.content_type ~= "tv" and info.content_type ~= "anime" then
+    local se, ep = filename:match("^[sS](%d%d?)[eE](%d%d?%d?)%f[%D]")
+    local extra = se and M.path_title_candidates(path) or {}
+    local show = extra[1] and M.release_head(extra[1]) or ""
+    if se and show ~= "" then
+      info.content_type = "tv"
+      info.title = show
+      info.season = tonumber(se)
+      info.episode = tonumber(ep)
+      info.season_explicit = true
+      info.year = nil
+    end
+  end
+
   if not info.title or info.title == "" then
     local extra = M.path_title_candidates(path)
     if #extra > 0 then
@@ -542,6 +579,18 @@ function M.resolve_media_info(path, video_name)
       if info.content_type == "unknown" then
         info.content_type = type_hint or "movie"
       end
+    end
+  end
+
+  -- "Show/Season 02/[Group] Show - Arc - 01.mkv": the folder states the
+  -- season the file name leaves out (Dr. STONE's Stone Wars is season 2).
+  if info.content_type == "anime" and not info.season_explicit then
+    local parent = tostring(path or ""):gsub("\\", "/"):match("([^/]+)/[^/]+$")
+    local folder_season = parent and (parent:lower():match("^season[%s%._%-]*(%d%d?)$")
+      or parent:lower():match("^s(%d%d?)$"))
+    if folder_season and tonumber(folder_season) >= 1 then
+      info.season = tonumber(folder_season)
+      info.season_explicit = true
     end
   end
 
