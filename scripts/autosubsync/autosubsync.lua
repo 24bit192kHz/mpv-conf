@@ -1649,12 +1649,19 @@ end
 local function sync_to_best_embedded(gate_min_cues, exclude_id)
     local _, active = get_active_track('sub')
     if active == nil then return false end
+    -- get_embedded_refs is a synchronous ffmpeg pass: on a cue-less 4K MKV it
+    -- reads for a minute, during which this script cannot see end-file. The
+    -- live path tells whether the user quit or moved to the next episode;
+    -- syncing the new file's sub to this file's reference would be wrong.
+    local launch_path = mp.get_property("path")
     local cap = tonumber(config.sync_window_embedded_cap) or 900
     local refs = get_embedded_refs(exclude_id or active.id, cap)
+    if mp.get_property("path") ~= launch_path then return false end
     local best = pick_best_embedded_ref(refs)
     if (not best or (gate_min_cues and best.cues < gate_min_cues)) and cap < 900 then
         mp.msg.info("autosubsync: embedded ref thin in " .. cap .. "s; retry 900s")
         refs = get_embedded_refs(exclude_id or active.id, 900)
+        if mp.get_property("path") ~= launch_path then return false end
         best = pick_best_embedded_ref(refs)
     end
     if not best then return false end
@@ -1869,6 +1876,12 @@ local synced_paths = {}
 local auto_timer = nil
 local function auto_sync_on_load()
     if shutting_down then return end
+    -- Each step below can block on a synchronous extraction; stop the
+    -- fallback chain once the file is gone (see sync_to_best_embedded).
+    local launch_path = mp.get_property("path")
+    local function moved_on()
+        return shutting_down or mp.get_property("path") ~= launch_path
+    end
     if just_applied_cache then
         just_applied_cache = false
         return
@@ -1884,10 +1897,12 @@ local function auto_sync_on_load()
         if sync_to_best_embedded(config.auto_sync_min_cues) then
             return
         end
+        if moved_on() then return end
     end
     if timing_ref_on and sync_via_timing_ref() then
         return
     end
+    if moved_on() then return end
     if config.auto_sync_audio and audio_is_cheap() then
         sync_via_ffsubsync()
         return
