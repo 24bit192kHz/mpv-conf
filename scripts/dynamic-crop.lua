@@ -67,6 +67,11 @@ local ipc_server_assigned = false
 local sidecar_stopping = false
 local legacy_started = false
 local scan_failures = 0
+-- Bumped on file-loaded and end-file. eof-reached stays false on quit/stop/
+-- next-file, so without this a scan in flight at teardown fell through to
+-- the direct fallback run, got killed by mpv (-2) and counted as a CUDA
+-- failure (or could queue its crop onto the next file).
+local file_gen = 0
 local pending_timer = nil
 local pending_crop = nil
 local pending_at = nil
@@ -1068,6 +1073,7 @@ local function run_scan()
     local scan_start = playback_pos + opts.scan_ahead_seconds
 
     running = true
+    local gen = file_gen
     start_daemon()
     log(string.format("scan playback=%.3f start=%.3f", playback_pos, scan_start))
 
@@ -1091,6 +1097,7 @@ local function run_scan()
         playback_only = false,
     }, function(success, result, error)
         running = false
+        if gen ~= file_gen then return end
         if not scans_allowed() then
             release_startup_pause()
             return
@@ -1117,6 +1124,7 @@ local function run_scan()
                 capture_stderr = true,
                 playback_only = false,
             }, function(fallback_success, fallback_result, fallback_error)
+                if gen ~= file_gen then return end
                 if not scans_allowed() then
                     release_startup_pause()
                     return
@@ -1308,6 +1316,7 @@ mp.register_script_message("timeline-events", function(payload, scan_start_text)
 end)
 
 mp.register_event("file-loaded", function()
+    file_gen = file_gen + 1
     source_width = nil
     source_height = nil
     scan_failures = 0
@@ -1356,6 +1365,7 @@ mp.register_event("file-loaded", function()
 end)
 
 mp.register_event("end-file", function()
+    file_gen = file_gen + 1
     stop_sidecar()
     if timer then
         timer:kill()
