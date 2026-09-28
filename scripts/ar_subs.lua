@@ -11,6 +11,24 @@ do
 end
 require 'ar_subs.init'
 
+-- API keys ride in curl headers, URLs and POST bodies, and mpv logs every
+-- subprocess argv at -v (so any --log-file holds them). Route each curl this
+-- script and its modules start through curl_secrets, which moves those
+-- arguments into a config on stdin. utils.subprocess calls mp.command_native,
+-- so it is covered too.
+do
+    local curl_secrets = require 'ar_subs.util.curl_secrets'
+    local native, native_async = mp.command_native, mp.command_native_async
+    mp.command_native = function(t, ...)
+        return native(curl_secrets.protect_command(t), ...)
+    end
+    if native_async then
+        mp.command_native_async = function(t, ...)
+            return native_async(curl_secrets.protect_command(t), ...)
+        end
+    end
+end
+
 local url_util = require 'ar_subs.util.url'
 local media_util = require 'ar_subs.util.media'
 local match_util = require 'ar_subs.util.match'
