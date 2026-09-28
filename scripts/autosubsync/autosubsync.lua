@@ -126,6 +126,13 @@ local config = {
     -- is instant. Costs background I/O during playback; the read is niced
     -- and only runs once per next-episode.
     prefetch_next_episode = true,
+    -- Extract THIS episode's embedded reference on file-loaded, in the
+    -- background, instead of after ar_subs has downloaded the Arabic sub.
+    -- The cold read (6.5s for a 23-min 1080p episode off ZFS, ~30s for a
+    -- 4K HDR one) then overlaps the download instead of adding to it.
+    -- Skipped when the file has an embedded Arabic track (nothing to sync)
+    -- or this episode already has a cached transform (replays are instant).
+    prefetch_current_episode = true,
 
     -- testing2: Argos-translated default embedded sub (or sherpa ASR) as a
     -- timed Arabic oracle; rewrite the downloaded best-score sub's timestamps
@@ -1163,6 +1170,41 @@ end
 -- Re-syncs and replays then cost milliseconds instead of a full file traversal.
 local REF_EXT = { subrip = "srt", ass = "ass" }
 
+-- Cue-bounded extraction. The reference only needs enough dialogue to lock
+-- an offset, but -t 900 made ffmpeg demux 15 minutes of the file (video
+-- included: subtitle packets sit inside the clusters) -- 6.5s cold for a
+-- 23-min 1080p episode off ZFS, ~30s for 4K HDR. Stream the track out and
+-- cut the pipe after REF_TARGET_DIALOGUE dialogue lines (sign/song styles
+-- skipped exactly like is_dialogue_style); ffmpeg dies on the closed pipe
+-- and stops reading. Sparse tracks never reach the target and still end at
+-- the 900s cap, so Lain's forced track keeps its full window.
+local REF_TARGET_DIALOGUE = 120
+
+local function sh_quote(v)
+    return "'" .. tostring(v):gsub("'", "'\\''") .. "'"
+end
+
+local function bounded_extract_argv(path, ff_index, ext, out_path, background)
+    local ff = { config.ffmpeg_path, "-hide_banner", "-nostdin", "-loglevel", "quiet",
+        "-analyzeduration", "100000", "-probesize", "5000000", "-an", "-vn", "-i", path,
+        "-map", "0:" .. ff_index, "-c:s", "copy", "-t", "900", "-f", ext == "srt" and "srt" or "ass", "-" }
+    local q = {}
+    for i, a in ipairs(ff) do q[i] = sh_quote(a) end
+    local prefix = ""
+    if background then
+        prefix = "nice -n 19 " .. (utils.file_info("/usr/bin/ionice") and "ionice -c3 " or "")
+    end
+    local awk
+    if ext == "srt" then
+        awk = "awk -v max=" .. REF_TARGET_DIALOGUE .. " '{print} /-->/{n++} n>=max && /^[[:space:]]*$/{exit}'"
+    else
+        awk = "awk -v max=" .. REF_TARGET_DIALOGUE .. " '{print} /^Dialogue:/{split($0,f,\",\"); st=tolower(f[4]);"
+            .. " sub(/^[[:space:][:punct:]]+/,\"\",st); split(st,w,/[ _-]/);"
+            .. " if (w[1] !~ /^(" .. table.concat(SIGN_PREFIXES, "|") .. ")/) n++; if (n>=max) exit}'"
+    end
+    return { "sh", "-c", prefix .. table.concat(q, " ") .. " | " .. awk .. " > " .. sh_quote(out_path) }
+end
+
 -- Returns list, covered_window. window 0/absent = full-file coverage (also
 -- how the pre-window manifest format -- a bare array -- is interpreted).
 -- Assignment form (NOT `local function`): the forward declaration at the
@@ -1223,6 +1265,25 @@ local function extract_all_refs(dir, exclude_id, window)
     end
     if #tracks == 0 then return {} end
     subprocess({ "mkdir", "-p", dir })
+    if #tracks == 1 and (not window or window >= 900) then
+        local t = tracks[1]
+        t._ref_file = t.id .. "." .. (REF_EXT[t.codec] or "ass")
+        local ret = subprocess(bounded_extract_argv(mp.get_property("path"), t['ff-index'],
+            REF_EXT[t.codec] or "ass", dir .. "/" .. t._ref_file, false))
+        local out = utils.file_info(dir .. "/" .. t._ref_file)
+        if ret == nil or ret.status ~= 0 or not out or out.size == 0 then return {} end
+        local list = { {
+            id = t.id, lang = t.lang, codec = t.codec,
+            default = t.default and true or false,
+            file = t._ref_file, cues = count_dialogue_cues(dir .. "/" .. t._ref_file),
+        } }
+        local mf = io.open(dir .. "/manifest.json", "w")
+        if mf then
+            mf:write(utils.format_json({ window = 900, tracks = list }))
+            mf:close()
+        end
+        return list
+    end
     local args = {
         config.ffmpeg_path, "-hide_banner", "-nostdin", "-y", "-loglevel", "quiet",
         "-analyzeduration", "100000", "-probesize", "5000000",
@@ -1346,33 +1407,40 @@ prefetch_next = function()
     local ffprobe = config.ffmpeg_path:gsub("ffmpeg$", "ffprobe")
     if not h.file_exists(ffprobe) then ffprobe = "ffprobe" end
     local pr = subprocess({ ffprobe, "-v", "quiet", "-print_format", "json",
-        "-show_entries", "stream=index,codec_type,codec_name:stream_tags=language", nxt })
+        "-show_entries", "stream=index,codec_type,codec_name:stream_tags=language,title:stream_disposition=default", nxt })
     if pr == nil or pr.status ~= 0 then return end
     local data = utils.parse_json(pr.stdout or "")
     if type(data) ~= "table" or type(data.streams) ~= "table" then return end
     -- Filenames use mpv subtitle track.id (1-based among ALL sub streams,
     -- including PGS/image). Prefetch must count those too so the manifest
     -- matches extract_all_refs on the next play.
-    local args = { "nice", "-n", "19", config.ffmpeg_path, "-hide_banner", "-nostdin",
-        "-y", "-loglevel", "quiet", "-analyzeduration", "100000", "-probesize", "5000000",
-        "-an", "-vn", "-i", nxt }
-    local picks, sub_id = {}, 0
-    for _, s in ipairs(data.streams) do
-        if s.codec_type == "subtitle" then
+    -- Same pick as extract_all_refs: text codec, no signs/songs title,
+    -- default among those else the first. (The probe used to request only
+    -- the language tag, so titles were empty and the default "Signs &
+    -- Songs" track won: 18-cue references for every prefetched episode.)
+    local picks, sub_id, eligible = {}, 0, {}
+    for _, st in ipairs(data.streams) do
+        if st.codec_type == "subtitle" then
             sub_id = sub_id + 1
-            local ext = REF_EXT[s.codec_name]
-            local title = (s.tags and (s.tags.title or s.tags.TITLE) or ""):lower()
-            if ext and #picks == 0
-                    and not title:find("sign", 1, true) and not title:find("song", 1, true) then
-                local file = sub_id .. "." .. ext
-                table.insert(args, "-map"); table.insert(args, "0:" .. s.index)
-                table.insert(args, "-c:s"); table.insert(args, "copy")
-                table.insert(args, "-t"); table.insert(args, "900")
-                table.insert(args, dir .. "/" .. file)
-                table.insert(picks, { file = file, id = sub_id,
-                    lang = s.tags and s.tags.language, codec = s.codec_name })
+            local ext = REF_EXT[st.codec_name]
+            local tags = st.tags or {}
+            local title = (tags.title or tags.TITLE or ""):lower()
+            if ext and not title:find("sign", 1, true) and not title:find("song", 1, true) then
+                table.insert(eligible, { st = st, id = sub_id, ext = ext,
+                    default = st.disposition and st.disposition.default == 1 })
             end
         end
+    end
+    local choice = eligible[1]
+    for _, e in ipairs(eligible) do
+        if e.default then choice = e; break end
+    end
+    local args
+    if choice then
+        local file = choice.id .. "." .. choice.ext
+        args = bounded_extract_argv(nxt, choice.st.index, choice.ext, dir .. "/" .. file, true)
+        table.insert(picks, { file = file, id = choice.id,
+            lang = choice.st.tags and choice.st.tags.language, codec = choice.st.codec_name })
     end
     if #picks == 0 then return end
     subprocess({ "mkdir", "-p", dir })
@@ -1384,7 +1452,8 @@ prefetch_next = function()
         if type(ret) ~= "table" or ret.status ~= 0 then return end
         local list = {}
         for _, p in ipairs(picks) do
-            if utils.file_info(dir .. "/" .. p.file) then
+            local out = utils.file_info(dir .. "/" .. p.file)
+            if out and out.size > 0 then
                 table.insert(list, { id = p.id, lang = p.lang, codec = p.codec,
                     file = p.file, cues = count_dialogue_cues(dir .. "/" .. p.file) })
             end
@@ -1397,6 +1466,72 @@ prefetch_next = function()
             mf:close()
         end
         mp.msg.info("autosubsync: prefetched refs ready: " .. nxt)
+    end)
+end
+
+-- Current-episode reference prefetch (see prefetch_current_episode). Same
+-- track pick and manifest as extract_all_refs, so the sync path reads it as
+-- a warm cache. A sync that starts while it is still reading waits for it
+-- (current_refs.waiters) instead of demuxing the same file twice.
+local current_refs = { dir = nil, waiters = nil }
+
+local function is_arabic_lang(lang)
+    lang = (lang or ""):lower()
+    return lang == "ar" or lang == "ara" or lang:sub(1, 3) == "ar-"
+end
+
+local function prefetch_current_refs()
+    if not config.auto_sync_on_load or not config.prefetch_current_episode then return end
+    local path = mp.get_property("path")
+    if not path or path:find("://", 1, true) then return end
+    local tracks = {}
+    for _, t in ipairs(mp.get_property_native("track-list") or {}) do
+        if t.type == "sub" and not t.external then
+            if is_arabic_lang(t.lang) then return end
+            local title = (t.title or ""):lower()
+            if TEXT_SUB_CODECS[t.codec] and not title:find("sign", 1, true)
+                    and not title:find("song", 1, true) then
+                table.insert(tracks, t)
+            end
+        end
+    end
+    if #tracks == 0 then return end
+    if h.file_exists(TRANSFORM_DIR .. "/" .. episode_key() .. ".json") then return end
+    local dir = video_ref_dir()
+    if read_ref_manifest(dir) then return end
+    local pick = tracks[1]
+    for _, t in ipairs(tracks) do
+        if t.default then pick = t; break end
+    end
+    local ext = REF_EXT[pick.codec] or "ass"
+    local file = pick.id .. "." .. ext
+    local args = bounded_extract_argv(path, pick['ff-index'], ext, dir .. "/" .. file, true)
+    subprocess({ "mkdir", "-p", dir })
+    current_refs.dir, current_refs.waiters = dir, {}
+    local t0 = mp.get_time()
+    mp.msg.info("autosubsync: prefetching this episode's reference in the background")
+    mp.command_native_async({
+        name = "subprocess", playback_only = false,
+        capture_stdout = false, capture_stderr = false, args = args,
+    }, function(_, ret)
+        local waiters = {}
+        if current_refs.dir == dir then
+            waiters = current_refs.waiters or {}
+            current_refs.dir, current_refs.waiters = nil, nil
+        end
+        local out = utils.file_info(dir .. "/" .. file)
+        if type(ret) == "table" and ret.status == 0 and out and out.size > 0 then
+            local mf = io.open(dir .. "/manifest.json", "w")
+            if mf then
+                mf:write(utils.format_json({ window = 900, tracks = { {
+                    id = pick.id, lang = pick.lang, codec = pick.codec,
+                    default = pick.default and true or false, file = file,
+                    cues = count_dialogue_cues(dir .. "/" .. file) } } }))
+                mf:close()
+            end
+            mp.msg.info(string.format("autosubsync: reference ready in %.1fs", mp.get_time() - t0))
+        end
+        for _, w in ipairs(waiters) do w() end
     end)
 end
 
@@ -1655,11 +1790,22 @@ local function sync_to_best_embedded(gate_min_cues, exclude_id)
     -- syncing the new file's sub to this file's reference would be wrong.
     local launch_path = mp.get_property("path")
     local cap = tonumber(config.sync_window_embedded_cap) or 900
+    local had_manifest = read_ref_manifest(video_ref_dir()) ~= nil
     local refs = get_embedded_refs(exclude_id or active.id, cap)
     if mp.get_property("path") ~= launch_path then return false end
     local best = pick_best_embedded_ref(refs)
     if (not best or (gate_min_cues and best.cues < gate_min_cues)) and cap < 900 then
         mp.msg.info("autosubsync: embedded ref thin in " .. cap .. "s; retry 900s")
+        refs = get_embedded_refs(exclude_id or active.id, 900)
+        if mp.get_property("path") ~= launch_path then return false end
+        best = pick_best_embedded_ref(refs)
+    end
+    -- A cached manifest can hold the wrong track: next-episode prefetches
+    -- used to pick the default "Signs & Songs" stream (18 cues). Re-extract
+    -- once with the live pick before calling the file too sparse.
+    if had_manifest and (not best or (gate_min_cues and best.cues < gate_min_cues)) then
+        mp.msg.info("autosubsync: cached reference too thin; re-extracting with the live track pick")
+        os.remove(video_ref_dir() .. "/manifest.json")
         refs = get_embedded_refs(exclude_id or active.id, 900)
         if mp.get_property("path") ~= launch_path then return false end
         best = pick_best_embedded_ref(refs)
@@ -1923,13 +2069,23 @@ local function on_sid_changed()
     if path == '' or path:find('_retimed', 1, true) then return end
     if synced_paths[path] then return end
     if auto_timer then auto_timer:kill() end
-    auto_timer = mp.add_timeout(config.auto_sync_delay, function()
+    local function run()
         auto_sync_on_load()
         local _, active = get_active_track('sub')
         local loaded = active and url_decode(active['external-filename'] or '') or ''
         if loaded:find('_retimed', 1, true) or just_applied_cache then
             synced_paths[path] = true
         end
+    end
+    auto_timer = mp.add_timeout(config.auto_sync_delay, function()
+        -- The background prefetch is still reading this episode's reference:
+        -- sync when it lands instead of starting a second demux.
+        if current_refs.dir and current_refs.dir == video_ref_dir() then
+            mp.msg.info("autosubsync: waiting for the background reference extraction")
+            table.insert(current_refs.waiters, run)
+            return
+        end
+        run()
     end)
 end
 
@@ -2167,9 +2323,14 @@ end)
 mp.observe_property("sid", "native", on_sid_changed)
 mp.register_event("file-loaded", function()
     shutting_down = false
+    -- Start at once: a local-index or cached Arabic sub can arrive in 0.4s,
+    -- and the sync must find the prefetch already in flight (it then waits
+    -- for it) rather than start a second, unniced demux of its own.
+    prefetch_current_refs()
 end)
 mp.register_event("end-file", function()
     shutting_down = true
+    current_refs.dir, current_refs.waiters = nil, nil
     if auto_timer then auto_timer:kill(); auto_timer = nil end
     synced_paths = {}
     just_applied_cache = false
