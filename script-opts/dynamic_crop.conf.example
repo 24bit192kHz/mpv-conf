@@ -38,6 +38,9 @@ symmetry_tolerance=96
 min_letterbox_aspect=1.8
 max_letterbox_aspect=2.60
 min_letterbox_crop_ratio=0.03
+# Letterbox crops keep ~full width; below this it is a logo/title card on
+# black, not a letterbox (a 1280x720 intro got cropped to 558x228).
+min_crop_width_ratio=0.70
 restore_grace_seconds=0.0
 # Restore gates (defaults: head 0.30 / min_lead 0.50 / transient 0.24).
 # Tightened for rapid AR switching (IMAX-style content has genuine 0.25-0.5s

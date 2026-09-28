@@ -28,6 +28,10 @@ local opts = {
     min_letterbox_aspect = 2.0,
     max_letterbox_aspect = 2.60,
     min_letterbox_crop_ratio = 0.08,
+    -- A letterbox crop keeps (nearly) the full width; a centered logo or
+    -- title card on black passes every other check (symmetric, 1.8-2.6
+    -- aspect) and got zoomed 2.3x (558x228 of a 1280x720 intro).
+    min_crop_width_ratio = 0.70,
     restore_grace_seconds = 0.0,
     restore_head_guard_seconds = 0.30,
     restore_min_lead_seconds = 0.50,
@@ -541,6 +545,7 @@ local function safe_active_crop(crop)
         and aspect >= opts.min_letterbox_aspect
         and aspect <= opts.max_letterbox_aspect
         and removed_ratio >= opts.min_letterbox_crop_ratio
+        and w / sw >= opts.min_crop_width_ratio
 end
 
 local function target_aspect(sw, sh)
