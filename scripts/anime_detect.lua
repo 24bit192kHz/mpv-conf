@@ -3,14 +3,16 @@
 -- queries TMDB /search/multi -> /tv/{id} or /movie/{id} for genres, and
 -- sets user-data/anime_detect/is_anime = "1" | "0". Profile-cond reads it
 -- to auto-apply Anime4K shaders. Caches results in a Lua table for the
--- session; persistent cache written to ~~/script-opts is omitted on
--- purpose to keep the script dependency-free.
+-- session, and remembers each show folder's verdict in
+-- ~~cache/anime_detect/dirs.json so the next launch sets the flag before
+-- the first frame instead of switching shaders mid-playback.
 --
 -- Config (script-opts/anime_detect.conf):
 --   tmdb_api_key=...          (required)
 --   genre_ids=16               (comma list of TMDB genre ids to treat as anime)
 --   min_score=0.0              (skip fuzzy matches below vote_average)
 --   skip_protocols=http,https,rtmp,rtsp  (don't probe streams)
+--   group_aliases=One Pace=One Piece      ([group] tag -> series to query)
 --   debug=no
 
 local mp = require 'mp'
@@ -26,6 +28,10 @@ local cfg = {
   -- 16 is "Animation" and also matches Pixar/Disney/Arcane, which
   -- Anime4K's line-art tuning harms.
   japanese_only = "yes",
+  -- Leading [release group] tags that name a series the filename never
+  -- does: "Tag=Series" pairs, comma separated. One Pace files are
+  -- "[One Pace][1079] Egghead 13", which TMDB cannot place.
+  group_aliases = "One Pace=One Piece",
   debug = "no",
 }
 options.read_options(cfg, "anime_detect")
@@ -54,6 +60,12 @@ end
 local genres = {}
 cfg.genre_ids:gsub("([^,]+)", function(s) s = tonumber(s:match("%S+")); if s then genres[s] = true end end)
 
+local group_aliases = {}
+cfg.group_aliases:gsub("([^,]+)", function(pair)
+  local tag, series = pair:match("^%s*(.-)%s*=%s*(.-)%s*$")
+  if tag and tag ~= "" and series and series ~= "" then group_aliases[tag:lower()] = series end
+end)
+
 local skip = {}
 cfg.skip_protocols:gsub("([^,]+)", function(s) skip[s:match("%S+")] = true end)
 
@@ -76,6 +88,71 @@ local retry_done = {}
 -- session cache: normalized-title -> bool (only verified TMDB verdicts;
 -- transport failures are never cached so a later file can recover)
 local cache = {}
+
+-- Persistent folder verdicts: parent-dir -> { a = #anime, n = #not, t = epoch }.
+-- Episode titles normalize per episode ("... zenpen 01"), and mpv is
+-- usually launched once per file, so the session cache rarely hits; the
+-- folder is the stable key. Only a provisional hint, and only for folders
+-- whose verdicts all agree (a loose-files folder mixing anime and live
+-- action gets none): the TMDB probe still runs and has the final word.
+local DIRS_PATH = mp.command_native({"expand-path", "~~cache/anime_detect/dirs.json"})
+local DIRS_MAX = 2000
+local dirs = {}
+local current_dir = nil
+
+local function load_dirs()
+  local f = io.open(DIRS_PATH, "r")
+  if not f then return end
+  local parsed = utils.parse_json(f:read("*a") or "")
+  f:close()
+  if type(parsed) == "table" then dirs = parsed end
+end
+
+local function ensure_dir(dir)
+  if utils.file_info(dir) then return true end
+  local args = package.config:sub(1, 1) == "\\"
+    and {"cmd", "/c", "mkdir", dir} or {"mkdir", "-p", dir}
+  mp.command_native({name = "subprocess", args = args, playback_only = false,
+    capture_stdout = true, capture_stderr = true})
+  return utils.file_info(dir) ~= nil
+end
+
+local function dir_hint(dir)
+  local e = dir and dirs[dir]
+  if type(e) ~= "table" then return nil end
+  local a, n = tonumber(e.a) or 0, tonumber(e.n) or 0
+  if a > 0 and n == 0 then return true end
+  if n > 0 and a == 0 then return false end
+  return nil
+end
+
+local function remember_dir(verdict)
+  if not current_dir then return end
+  local e = type(dirs[current_dir]) == "table" and dirs[current_dir] or { a = 0, n = 0 }
+  -- Counts only need to answer "consistent or mixed": stop writing once a
+  -- side is established, so replays of a known folder cost no disk I/O.
+  local side = verdict and "a" or "n"
+  if (tonumber(e[side]) or 0) >= 1 and dirs[current_dir] then return end
+  e[side] = (tonumber(e[side]) or 0) + 1
+  e.t = os.time()
+  dirs[current_dir] = e
+  local n, oldest, oldest_t = 0, nil, math.huge
+  for k, entry in pairs(dirs) do
+    n = n + 1
+    if (entry.t or 0) < oldest_t then oldest, oldest_t = k, entry.t or 0 end
+  end
+  if n > DIRS_MAX and oldest then dirs[oldest] = nil end
+  if not ensure_dir((utils.split_path(DIRS_PATH))) then return end
+  local tmp = DIRS_PATH .. ".tmp"
+  local f = io.open(tmp, "w")
+  if not f then return end
+  f:write(utils.format_json(dirs) or "{}")
+  f:close()
+  os.remove(DIRS_PATH)
+  os.rename(tmp, DIRS_PATH)
+end
+
+load_dirs()
 -- inflight: normalized-title -> boolean (prevent re-entrancy)
 local inflight = {}
 -- waiters: normalized-title -> { raw_title=..., gen=..., ja_audio=... }
@@ -151,10 +228,38 @@ local function title_from_path(path)
   return (f:match("^%s*(.-)%s*$") or f)
 end
 
+-- Leading [group] tag mapped through group_aliases, else nil.
+local function aliased_title(path)
+  local tag = basename(path):match("^%[([^%]]+)%]")
+  return tag and group_aliases[tag:lower()] or nil
+end
+
+-- Show folder of a file: parent dir, or grandparent when the parent is a
+-- season/extras subfolder. Used when the filename finds nothing on TMDB
+-- ("Made in Abyss Movie - 02 - Hourou Suru Tasogare" -> "Made in Abyss").
+local function folder_title(path)
+  local dir = (utils.split_path(path or "")):gsub("[/\\]+$", "")
+  for _ = 1, 2 do
+    local name = dir:match("([^/\\]+)$")
+    if not name then return nil end
+    local low = name:lower()
+    if not (low:match("^season") or low:match("^s%d+$") or low:match("^specials?$")
+        or low:match("^extras?$") or low:match("^%d+[a-z]?%.")) then
+      local t = title_from_path("/" .. name .. ".x")
+      return t ~= "" and t or nil
+    end
+    dir = dir:match("^(.*)[/\\][^/\\]+$") or ""
+  end
+  return nil
+end
+
 local function curl_json(url, cb)
-  local args = {"curl", "-fsSL", "-A", "mpv-anime_detect", "--max-time", "8", url}
+  -- The URL carries api_key=, and mpv logs every subprocess argv at -v
+  -- (so --log-file captures it). Hand the URL to curl as a config on stdin.
+  local args = {"curl", "-fsSL", "-A", "mpv-anime_detect", "--max-time", "8", "--config", "-"}
   mp.command_native_async({
     name = "subprocess",
+    stdin_data = 'url = "' .. url:gsub('[\\"]', '\\%0') .. '"\n',
     -- A 2KB JSON probe must survive EOF/teardown: the default
     -- playback_only=true gets killed on fast/headless exits and the
     -- generation guard already drops stale callbacks.
@@ -199,6 +304,8 @@ local function series_cut(s)
     or s:match("^(.-)[%s%.%-_]+%d+[xX]%d+")
     or s:match("^(.-)[%s%.%-_]+[eE]%d+")
     or s:match("^(.-)[%s%.%-_]+[sS]%d%d?%d?%s*$")
+    -- fansub convention: "Dandadan - 17", "Made in Abyss Movie - 02 - Title"
+    or s:match("^(.-)%s+%-%s+%d%d?%d?%d?v?%d?%f[%D]")
   if left then
     left = left:match("^%s*(.-)%s*$")
     if left and #left >= 3 then return left end
@@ -282,6 +389,13 @@ local function probe(raw_title, gen, ja_audio)
             return
           end
         end
+        local folder = folder_title(mp.get_property("path", ""))
+        local fnorm = folder and normalize(folder) or ""
+        if fnorm ~= "" and fnorm ~= norm and cache[fnorm] == nil and not inflight[fnorm] then
+          log("no match; retrying show folder", fnorm)
+          probe(folder, gen, ja_audio)
+          return
+        end
       end
       if not j then
         -- Transport failure after retry: never cache. Caching false here
@@ -294,6 +408,7 @@ local function probe(raw_title, gen, ja_audio)
         return
       end
       cache[norm] = false
+      remember_dir(false)
       mp.set_property("user-data/anime_detect/is_anime", "0")
       return
     end
@@ -311,6 +426,7 @@ local function probe(raw_title, gen, ja_audio)
     end
     if not best then
       cache[norm] = false
+      remember_dir(false)
       mp.set_property("user-data/anime_detect/is_anime", "0")
       return
     end
@@ -337,6 +453,7 @@ local function probe(raw_title, gen, ja_audio)
     end
     local function finalize(is_anime, lang)
       cache[norm] = is_anime
+      remember_dir(is_anime)
       mp.set_property("user-data/anime_detect/is_anime", is_anime and "1" or "0")
       log("result", norm, is_anime, lang or "?", best.name or best.title or "")
     end
@@ -405,26 +522,28 @@ local function on_loaded()
   end
 
   local ftitle = mp.get_property("force-media-title", nil)
-  local title = (ftitle and ftitle ~= "") and ftitle or title_from_path(path)
+  local title = (ftitle and ftitle ~= "") and ftitle or aliased_title(path) or title_from_path(path)
   if title == "" then
     mp.set_property("user-data/anime_detect/is_anime", "0")
     return
   end
   mp.set_property("user-data/anime_detect/title", title)
-  -- Apply a session cache hit before clearing, so [Anime] does not flash
-  -- off/on when the same title is already known.
+  -- Apply a known verdict before clearing, so [Anime] does not flash
+  -- off/on: session cache for the same title, else the folder's last
+  -- verdict (set here, on file-loaded, the shaders are in place before
+  -- the VO renders its first frame).
   local norm = normalize(title)
-  if cache[norm] ~= nil then
-    mp.set_property("user-data/anime_detect/is_anime", cache[norm] and "1" or "0")
-  else
-    mp.set_property("user-data/anime_detect/is_anime", "0")
-  end
+  current_dir = (utils.split_path(path))
+  local known = cache[norm]
+  if known == nil then known = dir_hint(current_dir) end
+  mp.set_property("user-data/anime_detect/is_anime", known and "1" or "0")
   probe(title, gen, has_japanese_audio())
 end
 
 mp.register_event("file-loaded", on_loaded)
 mp.register_event("end-file", function()
   probe_gen = probe_gen + 1
+  current_dir = nil
   mp.set_property("user-data/anime_detect/is_anime", "0")
   mp.set_property("user-data/anime_detect/title", "")
 end)

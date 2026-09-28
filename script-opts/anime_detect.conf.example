@@ -11,4 +11,8 @@ skip_protocols=http,https,rtmp,rtsp
 # file (catches co-productions TMDB tags en, like Edgerunners). Set no
 # to classify all animation as anime.
 japanese_only=yes
+# Leading [release group] tags naming a series the filename never does, as
+# Tag=Series pairs (comma separated). "[One Pace][1079] Egghead 13" gives
+# TMDB nothing to find; the alias queries One Piece instead.
+group_aliases=One Pace=One Piece
 debug=no
