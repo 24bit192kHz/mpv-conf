@@ -170,6 +170,7 @@ subsource_mod.init({
 -- subtitle loaded (the per-episode sibling kept in-folder). Set to "no" to
 -- always fetch regardless.
 local SKIP_IF_SIBLING_SUB = opt_or("skip_if_sibling_sub", "yes") ~= "no"
+local SKIP_IF_ARABIC_AUDIO = opt_or("skip_if_arabic_audio", "yes") ~= "no"
 
 local function search_cache_get(key)
     if SEARCH_CACHE_TTL <= 0 or not store_mod.available() then return nil end
@@ -2294,6 +2295,24 @@ local function enhanced_auto_fetch_if_needed()
     if SKIP_IF_SIBLING_SUB and has_sibling_sub() then
         mp.msg.info("SubDL: matching sibling subtitle already loaded, skipping fetch")
         return
+    end
+
+    -- Arabic audio needs no Arabic subtitle: an Arabic-audio series (Tash Ma
+    -- Tash, 381 episodes) spent three SubDL searches per episode finding
+    -- nothing. Manual search bindings still work on request.
+    if SKIP_IF_ARABIC_AUDIO then
+        local audio, arabic = 0, 0
+        for _, t in ipairs(mp.get_property_native("track-list") or {}) do
+            if t.type == "audio" then
+                audio = audio + 1
+                local lang = (t.lang or ""):lower()
+                if lang == "ar" or lang == "ara" or lang:sub(1, 3) == "ar-" then arabic = arabic + 1 end
+            end
+        end
+        if audio > 0 and arabic == audio then
+            mp.msg.info("ar_subs: audio is Arabic, skipping automatic fetch")
+            return
+        end
     end
 
     -- Check cached files based on media content_type

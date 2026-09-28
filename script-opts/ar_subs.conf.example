@@ -26,6 +26,9 @@ subtitle_api_timeout=10
 # Skip fetching when the playing video already has a same-stem external subtitle
 # loaded (the per-episode sibling kept in the folder). Set "no" to always fetch.
 skip_if_sibling_sub=yes
+# Skip the automatic fetch when every audio track is Arabic (manual search
+# still works). Arabic-audio series would otherwise spend API quota per episode.
+skip_if_arabic_audio=yes
 
 # Restrict auto-fetch to files whose path contains this string; empty =
 # fetch for anything that plays (global mode).
