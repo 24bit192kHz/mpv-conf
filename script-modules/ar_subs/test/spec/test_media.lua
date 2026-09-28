@@ -98,6 +98,7 @@ H.eq_n("anime Title S2 - 10 (dots preserved)", { media.extract_anime_info("Anime
 H.eq_n("anime Title - 12 (space)", { media.extract_anime_info("Anime Title - 12") }, { "Anime Title", nil, 12, nil })
 H.eq_n("anime range Foo - 01~12", { media.extract_anime_info("Foo - 01~12") }, { "Foo", nil, 1, nil })
 H.eq_n("anime Foo E05", { media.extract_anime_info("Foo E05") }, { "Foo", nil, 5, nil })
+H.eq_n("anime spaced S02 E06 keeps season", { media.extract_anime_info("Ghost in the Shell (S.A.C) - S02 E06 - DI - Excavation (1080p - DUAL Audio)") }, { "Ghost in the Shell (S.A.C) -", 2, 6, nil })
 H.eq_n("anime 1080p-as-ep rejected", { media.extract_anime_info("Movie - 1080p") }, { nil, nil, nil, nil })
 H.eq_n("anime no group, no E pattern", { media.extract_anime_info("plain.filename") }, { nil, nil, nil, nil })
 H.eq_n("anime [Group] Title E01 X265", { media.extract_anime_info("[Group] Title E01 X265") }, { "Title", nil, 1, nil })

@@ -347,11 +347,13 @@ function M.extract_anime_info(filename)
     return title, nil, tonumber(episode), year
   end
 
-  -- Pattern 5: "Title E01" (No Season)
+  -- Pattern 5: "Title E01" (No Season), or spaced "Title - S02 E06"
+  -- (GITS 2nd Gig): keep the season clean() strips, like Pattern 2 does.
   title, episode = s:match("^(.+) E(%d+)")
   if title then
+    local ts = title:match(" S(%d+)$")
     title, year = clean(title)
-    return title, nil, tonumber(episode), year
+    return title, ts and tonumber(ts), tonumber(episode), year
   end
 
   -- Pattern 6: "Title S01E01" (Standard TV format inside Anime)
