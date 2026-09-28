@@ -72,7 +72,12 @@ struct AnalyzerConfig {
 
 struct ControllerConfig {
     fs::path mpv_socket;
+    // Longest wait between scans. The controller rescans earlier when the
+    // scanned window stops covering playback (see run_controller).
     double interval_seconds = 0.25;
+    // Rescan once fewer than this many scanned seconds remain ahead of
+    // playback. 0 = the old fixed-interval loop.
+    double min_lookahead_seconds = 0.0;
     double scan_ahead_seconds = 0.0;
     double duration_seconds = 3.0;
     double threshold = 2.0;
@@ -719,7 +724,8 @@ std::optional<json> mpv_property(MpvIpc& client, const std::string& name) {
     return response["data"];
 }
 
-bool scan_once(const ControllerConfig& config, MpvIpc& client, bool allow_paused) {
+bool scan_once(const ControllerConfig& config, MpvIpc& client, bool allow_paused,
+               std::string* scanned_path = nullptr, double* scanned_start = nullptr) {
     auto path_value = mpv_property(client, "path");
     auto time_value = mpv_property(client, "time-pos");
     auto eof_value = mpv_property(client, "eof-reached");
@@ -741,6 +747,8 @@ bool scan_once(const ControllerConfig& config, MpvIpc& client, bool allow_paused
     }
 
     const double scan_start = time_value->get<double>() + config.scan_ahead_seconds;
+    if (scanned_path) *scanned_path = path_value->get<std::string>();
+    if (scanned_start) *scanned_start = scan_start;
     AnalyzerConfig analyzer{
         fs::path(path_value->get<std::string>()),
         scan_start,
@@ -783,9 +791,38 @@ void run_controller(const ControllerConfig& config) {
         client.connect_socket();
         bool first_scan_sent = false;
         while (true) {
-            bool sent = scan_once(config, client, !first_scan_sent);
+            std::string path;
+            double start = 0.0;
+            bool sent = scan_once(config, client, !first_scan_sent, &path, &start);
             first_scan_sent = first_scan_sent || sent;
-            std::this_thread::sleep_for(std::chrono::duration<double>(config.interval_seconds));
+            if (config.min_lookahead_seconds <= 0.0) {
+                std::this_thread::sleep_for(std::chrono::duration<double>(config.interval_seconds));
+                continue;
+            }
+            if (!sent) {
+                // Nothing scanned (core idle mid-seek, paused, no time-pos
+                // yet): retry soon rather than after a full interval.
+                std::this_thread::sleep_for(std::chrono::milliseconds(200));
+                continue;
+            }
+            // Back-to-back scans re-decoded ~92% of every 10s window (NVDEC
+            // at 35-75% during 1080p playback). Wait while the last window
+            // still covers playback with min_lookahead to spare; a seek,
+            // a file change or running low on lookahead rescans at once.
+            const double window_end = start + config.duration_seconds;
+            const auto deadline = std::chrono::steady_clock::now()
+                + std::chrono::duration_cast<std::chrono::steady_clock::duration>(
+                    std::chrono::duration<double>(config.interval_seconds));
+            while (std::chrono::steady_clock::now() < deadline) {
+                std::this_thread::sleep_for(std::chrono::milliseconds(100));
+                auto pos_value = mpv_property(client, "time-pos");
+                auto path_value = mpv_property(client, "path");
+                if (!pos_value || !pos_value->is_number()) break;
+                if (!path_value || !path_value->is_string() || path_value->get<std::string>() != path) break;
+                const double pos = pos_value->get<double>();
+                if (pos < start - config.scan_ahead_seconds - 1.0) break;   // seek backward
+                if (window_end - pos < config.min_lookahead_seconds) break; // seek forward / ran low
+            }
         }
     } catch (const std::exception& exc) {
         std::cerr << "cuda-crop-cpp controller exited: " << exc.what() << "\n";
@@ -858,6 +895,7 @@ int run_controller_command(int argc, char** argv) {
         if (!value) break;
         if (arg == "--mpv-socket") config.mpv_socket = *value;
         else if (arg == "--interval") config.interval_seconds = std::stod(*value);
+        else if (arg == "--min-lookahead") config.min_lookahead_seconds = std::stod(*value);
         else if (arg == "--scan-ahead") config.scan_ahead_seconds = std::stod(*value);
         else if (arg == "--duration") config.duration_seconds = std::stod(*value);
         else if (arg == "--threshold") config.threshold = std::stod(*value);

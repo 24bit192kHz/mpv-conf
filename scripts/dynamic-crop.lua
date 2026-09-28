@@ -41,6 +41,15 @@ local opts = {
     -- lasts less than this stays uncropped (its bars shown) instead of
     -- zooming in and straight back out. 0 follows every shot.
     min_crop_seconds = 3.0,
+    -- Pause playback at file start until the first scan reports, so a
+    -- letterboxed opening never shows one uncropped frame before zooming.
+    -- startup_hold_timeout caps the wait.
+    startup_hold = true,
+    -- Sidecar rescans once fewer than this many scanned seconds remain ahead
+    -- of playback (or on a seek); scan_interval is then only the longest
+    -- wait. 0 = scan back to back every scan_interval.
+    min_lookahead_seconds = 7.0,
+    startup_hold_timeout = 2.0,
     scan_interval = 1,
     detect_limit = 2,
     detect_round = 2,
@@ -159,6 +168,7 @@ local function start_sidecar()
             "controller",
             "--mpv-socket", sidecar_socket,
             "--interval", tostring(opts.scan_interval),
+            "--min-lookahead", tostring(opts.min_lookahead_seconds),
             "--scan-ahead", tostring(opts.scan_ahead_seconds),
             "--duration", tostring(opts.read_ahead_seconds),
             "--threshold", tostring(opts.detect_limit),
@@ -304,6 +314,7 @@ local function stop_cuda_timers()
 end
 
 local function hold_startup_until_first_scan()
+    if not opts.startup_hold then return end
     if startup_pause_active or initial_scan_completed then return end
     startup_pause_was_paused = mp.get_property_native("pause") == true
     startup_pause_active = true
@@ -313,7 +324,7 @@ local function hold_startup_until_first_scan()
     -- vo=null / 1s clips / a sidecar that never posts a crop would otherwise
     -- stay paused forever. Unblock playback if the first scan is late.
     if startup_pause_timer then startup_pause_timer:kill() end
-    startup_pause_timer = mp.add_timeout(2.0, function()
+    startup_pause_timer = mp.add_timeout(opts.startup_hold_timeout, function()
         startup_pause_timer = nil
         if startup_pause_active then
             mp.msg.warn("dynamic_crop: first scan timed out, releasing startup pause")
