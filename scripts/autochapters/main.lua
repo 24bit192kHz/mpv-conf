@@ -335,6 +335,15 @@ end
 local function file_load()
     placeholder_title = mp.get_property("filename/no-ext")
     if not options.on_file_load then return end
+    -- Local fix: the search_only_when_chapters_missing guard in
+    -- apply_chapters() counts the *kept* list, which is always empty with
+    -- keep_previous_chapters=no, so it never fired. aniskip's 2-entry OP
+    -- list then replaced full embedded chapters (Intro/Opening/Part A/B/
+    -- Ending/Preview): SmartSkip skipped the cold open with the OP and lost
+    -- ED/Preview. Check the file's own chapters before searching at all.
+    if options.search_only_when_chapters_missing and (mp.get_property_number("chapters") or 0) > 0 then
+        return
+    end
 
     local path = mp.get_property("path")
     find_chapters(path, true)
