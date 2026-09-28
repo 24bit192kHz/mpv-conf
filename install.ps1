@@ -35,7 +35,8 @@ New-Item -ItemType Directory -Force -Path $target | Out-Null
 
 $items = @(
     'mpv.conf', '.env.example', 'input.conf', 'profiles.conf',
-    'fonts', 'script-modules', 'script-opts', 'scripts', 'shaders', 'cuda-crop-cpp'
+    'fonts', 'script-modules', 'script-opts', 'scripts', 'shaders', 'cuda-crop-cpp',
+    'licenses'
 )
 foreach ($it in $items) {
     $p = Join-Path $src.FullName $it

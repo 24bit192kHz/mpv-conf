@@ -52,7 +52,8 @@ for item in \
     script-opts \
     scripts \
     shaders \
-    cuda-crop-cpp
+    cuda-crop-cpp \
+    licenses
 do
     if [ -e "$src/$item" ]; then
         cp -R "$src/$item" "$target/"

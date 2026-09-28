@@ -14,8 +14,11 @@ chapters/
 fonts.conf-backup
 scripts/autosubsync/.git.local/
 wiki/
-graphify-out/.graphify_python
-graphify-out/.graphify_root
-graphify-out/cost.json
 scripts/mpris.so
 scripts/autochapters/*.json
+
+# Local dev tooling, kept on disk but not published
+graphify-out/
+CLAUDE.md
+AGENTS.md
+GEMINI.md
