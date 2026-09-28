@@ -37,6 +37,10 @@ local opts = {
     restore_min_lead_seconds = 0.50,
     restore_tail_guard_seconds = 0.20,
     transient_revert_seconds = 0.24,
+    -- Anti-pumping: a letterbox shot that cuts into full-frame video and
+    -- lasts less than this stays uncropped (its bars shown) instead of
+    -- zooming in and straight back out. 0 follows every shot.
+    min_crop_seconds = 3.0,
     scan_interval = 1,
     detect_limit = 2,
     detect_round = 2,
@@ -787,6 +791,27 @@ schedule_next_pending = function()
     end)
 end
 
+-- Withdraw pending events scheduled for needed_at (a later scan decided the
+-- shot is too short to crop after an earlier one queued it).
+local function cancel_pending_near(needed_at)
+    local tolerance = frame_duration_seconds()
+    local removed = false
+    for index = #pending_events, 1, -1 do
+        local event = pending_events[index]
+        if math.abs((event.timing.needed_at or -math.huge) - needed_at) <= tolerance then
+            table.remove(pending_events, index)
+            removed = true
+        end
+    end
+    if removed and pending_timer then
+        pending_timer:kill()
+        pending_timer = nil
+        pending_crop = nil
+        pending_at = nil
+    end
+    if removed then schedule_next_pending() end
+end
+
 local function upsert_pending_event(crop, apply_at, timing)
     local tolerance = frame_duration_seconds()
     for index, event in ipairs(pending_events) do
@@ -1052,6 +1077,52 @@ local function queue_timeline_events(events, scan_start)
         end
     end
     prepared = filtered
+
+    -- Anime cuts short cinematic letterbox shots into 16:9 scenes: JJK ep01
+    -- has 20, 15 of them under 3s (six in 15s at 20:35), and following each
+    -- one zoomed 40 times in 24 minutes. Only zooming IN from full frame is held back: restores
+    -- and letterbox-to-letterbox changes still follow immediately, so no
+    -- picture is ever cut. A shot whose end lies past this window with less
+    -- than min_crop_seconds visible is decided by a later scan (they run
+    -- continuously with a read_ahead_seconds lookahead).
+    if opts.min_crop_seconds > 0 then
+        local window_end = scan_start + opts.read_ahead_seconds
+        local state = current_crop_state()
+        local uncropped = state == nil or is_full_frame_crop(state)
+        local kept, skipping = {}, false
+        for index, prepared_event in ipairs(prepared) do
+            local crop = normalize_crop(prepared_event.event.crop)
+            local full = is_full_frame_crop(crop)
+            if skipping then
+                -- drop the skipped shot's letterbox variants and its restore
+                if full then skipping = false end
+            elseif uncropped and not full then
+                local ends_at = nil
+                for later = index + 1, #prepared do
+                    if is_full_frame_crop(normalize_crop(prepared[later].event.crop)) then
+                        ends_at = prepared[later].needed_at
+                        break
+                    end
+                end
+                local lasts = (ends_at or window_end) - prepared_event.needed_at
+                if lasts < opts.min_crop_seconds then
+                    skipping = true
+                    cancel_pending_near(prepared_event.needed_at)
+                    log(string.format("crop_skipped reason=%s crop=%s needed_at=%.3f lasts=%.3f min=%.3f",
+                        ends_at and "short_shot" or "undecided", crop, prepared_event.needed_at,
+                        lasts, opts.min_crop_seconds))
+                else
+                    table.insert(kept, prepared_event)
+                    uncropped = false
+                end
+            else
+                table.insert(kept, prepared_event)
+                uncropped = full
+            end
+        end
+        prepared = kept
+    end
+
     newest_past_index = nil
     newest_past_needed_at = -math.huge
     for index, prepared_event in ipairs(prepared) do

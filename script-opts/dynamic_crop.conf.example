@@ -49,6 +49,12 @@ restore_grace_seconds=0.0
 restore_head_guard_seconds=0.10
 restore_min_lead_seconds=0.15
 transient_revert_seconds=0.10
+# Anti-pumping: letterbox shots that cut into full-frame video and last less
+# than this stay uncropped (bars shown) instead of zooming in and back out.
+# JJK ep01: 20 letterbox shots, 15 under 3s; 3.0 removes 30 of 40 zooms and
+# still crops 85% of letterboxed time. Restores are never delayed.
+# 0 = follow every shot.
+min_crop_seconds=3.0
 scan_interval=0.01
 detect_limit=2
 detect_round=2
