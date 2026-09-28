@@ -51,7 +51,7 @@ local opts = {
 
 options.read_options(opts)
 
-local script_version = "dynamic-crop-lua-panscan-v9"
+local script_version = "dynamic-crop-lua-panscan-v10"
 local label = "dynamic_crop_cuda_crop"
 local timer = nil
 local running = false
@@ -198,11 +198,11 @@ local function apply_transform(zoom, pan_x, pan_y)
     mp.set_property_number("video-zoom", zoom)
 end
 
--- blend-subtitles=video makes subtitles follow the video scaler/panscan.
--- Removing encoded letterbox rows with video-crop changes the subtitle
--- canvas, though: the default sub-pos=100 can land below the cropped frame.
--- Preserve the user's layout and only clamp its vertical position while a
--- crop is active. Do not change sub-scale; video mode scales it automatically.
+-- Transform mode only. video-zoom scales the whole rendered picture, subs
+-- included, so the default sub-pos=100 can land below the visible frame;
+-- clamp it while zoomed. Panscan mode never touches subtitle options:
+-- video-crop hands libass the crop as its frame, and mpv.conf's
+-- sub-ass-force-margins=yes fits dialogue to it (SRT does so natively).
 local saved_sub_layout = nil
 
 local function restore_sub_layout()
@@ -605,7 +605,6 @@ local function apply_render_crop(crop, panscan)
     reset_transform()
     mp.set_property("video-crop", video_crop_rect(crop))
     set_panscan(panscan)
-    apply_subtitle_crop(crop)
     return nil, nil, nil
 end
 
