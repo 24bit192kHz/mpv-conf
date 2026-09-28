@@ -51,10 +51,10 @@ restore_min_lead_seconds=0.15
 transient_revert_seconds=0.10
 # Anti-pumping: letterbox shots that cut into full-frame video and last less
 # than this stay uncropped (bars shown) instead of zooming in and back out.
-# JJK ep01: 20 letterbox shots, 15 under 3s; 3.0 removes 30 of 40 zooms and
-# still crops 85% of letterboxed time. Restores are never delayed.
-# 0 = follow every shot.
-min_crop_seconds=3.0
+# 0 = follow every shot (wanted: JJK's 1.5s cinematic inserts at 20:35 must
+# crop). E.g. 3.0 would drop 30 of JJK ep01's 40 zooms, keeping the shots
+# under 3s uncropped. Restores are never delayed either way.
+min_crop_seconds=0
 # Startup hold: pause at file start until the first scan reports, so a
 # letterboxed opening never shows an uncropped frame. Measured cost: motion
 # starts 1.0s later on 1080p and 1.9s on 4K DV (the scan misses the 2s

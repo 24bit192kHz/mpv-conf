@@ -39,8 +39,8 @@ local opts = {
     transient_revert_seconds = 0.24,
     -- Anti-pumping: a letterbox shot that cuts into full-frame video and
     -- lasts less than this stays uncropped (its bars shown) instead of
-    -- zooming in and straight back out. 0 follows every shot.
-    min_crop_seconds = 3.0,
+    -- zooming in and straight back out. 0 (default) follows every shot.
+    min_crop_seconds = 0,
     -- Pause playback at file start until the first scan reports, so a
     -- letterboxed opening never shows one uncropped frame before zooming.
     -- startup_hold_timeout caps the wait.
